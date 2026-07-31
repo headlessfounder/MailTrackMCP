@@ -5,9 +5,21 @@ import { handleMcp } from './mcp'
 type Env = {
   DB: D1Database
   ADMIN_TOKEN: string
+  /** Canonical host that pixel + link URLs are built on (e.g. go.duvalsoftware.com).
+   *  Falls back to the request origin so the worker still works without it. */
+  TRACKING_HOST?: string
+  /** Optional: set to enable "first open" email alerts via Resend. */
+  RESEND_API_KEY?: string
+  NOTIFY_FROM?: string
 }
 
 type User = { id: string; name: string; email: string; api_token: string }
+
+/** Where tracked pixel/link URLs live. Pinning this to a custom domain keeps the
+ *  embedded URLs stable regardless of which host the register call arrived on. */
+function trackingOrigin(env: Env, reqUrl: string): string {
+  return env.TRACKING_HOST ? `https://${env.TRACKING_HOST}` : new URL(reqUrl).origin
+}
 
 const app = new Hono<{ Bindings: Env; Variables: { user: User } }>()
 
@@ -57,16 +69,19 @@ function classify(
   return 'human'
 }
 
+const REAL_OPEN = ['human', 'gmail-proxy']
+
 async function logEvent(
   c: { env: Env; req: { raw: Request; header: (h: string) => string | undefined } },
   messageId: string,
   linkId: string | null,
   type: 'open' | 'click',
   sentAt: string
-) {
+): Promise<string> {
   const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf
   const ua = c.req.header('user-agent') || ''
   const ip = c.req.header('cf-connecting-ip') || ''
+  const classification = classify(ua, cf, sentAt, type)
   await c.env.DB.prepare(
     `INSERT INTO events (message_id, link_id, type, ts, ua, ip, country, region, city, timezone, classification)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -82,10 +97,85 @@ async function logEvent(
       cf?.region || null,
       cf?.city || null,
       cf?.timezone || null,
-      classify(ua, cf, sentAt, type)
+      classification
     )
     .run()
+  return classification
 }
+
+/** True when this event is the message's first genuine engagement — i.e. exactly
+ *  one qualifying event exists (the one just written). Bot noise never triggers. */
+async function isFirstRealEngagement(
+  db: D1Database,
+  messageId: string,
+  type: 'open' | 'click',
+  classification: string
+): Promise<boolean> {
+  if (type === 'click' ? classification !== 'human' : !REAL_OPEN.includes(classification)) {
+    return false
+  }
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM events
+       WHERE message_id = ?
+         AND ((type = 'open' AND classification IN ('human','gmail-proxy'))
+              OR (type = 'click' AND classification = 'human'))`
+    )
+    .bind(messageId)
+    .first<{ n: number }>()
+  return (row?.n ?? 0) === 1
+}
+
+/** Email the sender the moment a recipient first engages. No-ops unless
+ *  RESEND_API_KEY is configured, so the tracker works fine without it. */
+async function notifyFirstEngagement(
+  env: Env,
+  messageId: string,
+  type: 'open' | 'click',
+  classification: string
+) {
+  if (!env.RESEND_API_KEY) return
+  const row = await env.DB.prepare(
+    `SELECT m.recipient, m.subject, m.campaign, u.email AS user_email, u.name AS user_name
+     FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?`
+  )
+    .bind(messageId)
+    .first<{
+      recipient: string
+      subject: string | null
+      campaign: string | null
+      user_email: string
+      user_name: string
+    }>()
+  if (!row) return
+
+  const verb = type === 'click' ? 'clicked a link in' : 'opened'
+  const subject = `${row.recipient} ${verb} "${row.subject || '(no subject)'}"`
+  const geoNote =
+    classification === 'gmail-proxy' ? ' (via Gmail proxy — no location available)' : ''
+
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: env.NOTIFY_FROM || 'DuvalTrack <notify@duvalsoftware.com>',
+      to: [row.user_email],
+      subject: `🔔 ${subject}`,
+      html:
+        `<p><strong>${escapeHtml(row.recipient)}</strong> just ${verb} ` +
+        `<strong>${escapeHtml(row.subject || '(no subject)')}</strong>${geoNote}.</p>` +
+        (row.campaign ? `<p>Campaign: ${escapeHtml(row.campaign)}</p>` : '') +
+        `<p style="color:#666;font-size:13px">First engagement on this message. ` +
+        `See the full timeline in your DuvalTrack dashboard.</p>`,
+    }),
+  }).catch(() => {}) // never let a notification failure break tracking
+}
+
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!))
 
 // ---------- public tracking routes (no auth — hit by recipients' mail clients) ----------
 
@@ -97,7 +187,10 @@ app.get('/p/:id', async (c) => {
     .bind(id)
     .first<{ id: string; sent_at: string }>()
   if (msg) {
-    await logEvent(c, msg.id, null, 'open', msg.sent_at)
+    const cls = await logEvent(c, msg.id, null, 'open', msg.sent_at)
+    if (await isFirstRealEngagement(c.env.DB, msg.id, 'open', cls)) {
+      c.executionCtx.waitUntil(notifyFirstEngagement(c.env, msg.id, 'open', cls))
+    }
   }
   return new Response(PIXEL, {
     headers: {
@@ -119,7 +212,10 @@ app.get('/l/:id', async (c) => {
     .bind(id)
     .first<{ id: string; original_url: string; message_id: string; sent_at: string }>()
   if (!link) return c.text('Not found', 404)
-  await logEvent(c, link.message_id, link.id, 'click', link.sent_at)
+  const cls = await logEvent(c, link.message_id, link.id, 'click', link.sent_at)
+  if (await isFirstRealEngagement(c.env.DB, link.message_id, 'click', cls)) {
+    c.executionCtx.waitUntil(notifyFirstEngagement(c.env, link.message_id, 'click', cls))
+  }
   return c.redirect(link.original_url, 302)
 })
 
@@ -223,7 +319,7 @@ app.post('/api/register', async (c) => {
   if (!body.recipient || !body.html) {
     return c.json({ error: 'recipient and html required' }, 400)
   }
-  const origin = new URL(c.req.url).origin
+  const origin = trackingOrigin(c.env, c.req.url)
   return c.json(await registerMessage(c.env.DB, origin, c.get('user').id, body))
 })
 
@@ -278,7 +374,11 @@ app.get('/api/messages/:id/events', async (c) => {
 // ---------- MCP endpoint (Bearer user token; scoped to that user) ----------
 
 app.post('/mcp', (c) =>
-  handleMcp(c.req.raw, c.env.DB, { registerMessage, messageSummary })
+  handleMcp(c.req.raw, c.env.DB, {
+    registerMessage,
+    messageSummary,
+    trackingOrigin: trackingOrigin(c.env, c.req.url),
+  })
 )
 
 // ---------- dashboard (token-gated, self-contained SPA) ----------

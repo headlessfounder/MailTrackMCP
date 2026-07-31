@@ -146,7 +146,7 @@ async function callTool(ctx: Ctx, name: string, args: Record<string, unknown>) {
 export async function handleMcp(
   req: Request,
   db: D1Database,
-  deps: Pick<Ctx, 'registerMessage' | 'messageSummary'>
+  deps: Pick<Ctx, 'registerMessage' | 'messageSummary'> & { trackingOrigin?: string }
 ): Promise<Response> {
   const token = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
   if (!token) return json(err(null, -32001, 'missing bearer token'), 401)
@@ -160,7 +160,12 @@ export async function handleMcp(
     return json(err(null, -32700, 'parse error'))
   }
 
-  const ctx: Ctx = { db, origin: new URL(req.url).origin, user, ...deps }
+  const ctx: Ctx = {
+    db,
+    origin: deps.trackingOrigin || new URL(req.url).origin,
+    user,
+    ...deps,
+  }
   const id = msg.id ?? null
 
   switch (msg.method) {

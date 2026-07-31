@@ -2,6 +2,17 @@
   "name": "duvaltrack",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
+  // Keep the workers.dev host alive: the registered MCP endpoint and existing
+  // dashboard links point at it. Tracking URLs use TRACKING_HOST regardless.
+  "workers_dev": true,
+  "vars": {
+    // Canonical host for pixel + link URLs. Matches the sending domain so links
+    // don't look like phishing to spam filters.
+    "TRACKING_HOST": "go.duvalsoftware.com"
+  },
+  "routes": [
+    { "pattern": "go.duvalsoftware.com", "custom_domain": true }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
