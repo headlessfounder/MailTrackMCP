@@ -75,12 +75,35 @@ const fmt=ts=>{const d=new Date(ts);return d.toLocaleString(undefined,{month:'sh
 const loc=e=>[e.city,e.region,e.country].filter(Boolean).join(', ');
 const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-async function api(path){const r=await fetch(path,{headers:{Authorization:'Bearer '+token}});if(!r.ok)throw new Error(r.status);return r.json();}
+// Session cookie (set by a magic link) is sent automatically; the Bearer header
+// is only added when someone pasted a personal dt_ token.
+async function api(path){
+  const h=token?{Authorization:'Bearer '+token}:{};
+  const r=await fetch(path,{headers:h,credentials:'same-origin'});
+  if(!r.ok)throw new Error(r.status);return r.json();
+}
 
 function gate(msg){
-  $('#root').innerHTML='<div class="gate"><h1>DuvalTrack</h1><p class="muted">'+(msg||'Enter your access token')+'</p>'+
-    '<input id="tok" placeholder="dt_..." autofocus><button onclick="setTok()">Open dashboard</button></div>';
+  const err=new URLSearchParams(location.search).get('err');
+  const note=err==='expired'?'That link expired or was already used. Request a new one.':
+             err==='invalid'?'That link was not valid. Request a new one.':(msg||'');
+  $('#root').innerHTML='<div class="gate"><h1>DuvalTrack</h1>'+
+    (note?'<p class="muted">'+esc(note)+'</p>':'<p class="muted">Sign in to see your tracked emails</p>')+
+    '<input id="email" type="email" placeholder="you@duvalsoftware.com" autofocus>'+
+    '<button onclick="sendLink()">Email me a sign-in link</button>'+
+    '<p id="sent" class="muted" style="display:none;margin-top:14px">'+
+    'If that address has an account, a sign-in link is on its way. It expires in 15 minutes.</p>'+
+    '<details style="margin-top:22px;text-align:left"><summary class="muted" style="cursor:pointer;font-size:13px">Use an API token instead</summary>'+
+    '<input id="tok" placeholder="dt_..."><button onclick="setTok()">Open dashboard</button></details></div>';
 }
+window.sendLink=async()=>{
+  const email=$('#email').value.trim();if(!email)return;
+  try{
+    const r=await fetch('/api/auth/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    if(r.status===503){$('#sent').textContent='Magic-link login is not configured yet — use an API token below.';}
+    $('#sent').style.display='';
+  }catch(e){$('#sent').textContent='Could not send right now. Try the API token option.';$('#sent').style.display='';}
+};
 window.setTok=()=>{token=$('#tok').value.trim();sessionStorage.setItem('dt_token',token);load();};
 
 function groupByRecipient(msgs){
@@ -96,7 +119,9 @@ function groupByRecipient(msgs){
 
 async function load(){
   let data;
-  try{data=await api('/api/summary');}catch(e){return gate(e.message==='401'?'Invalid token. Try again.':'Error loading.');}
+  try{data=await api('/api/summary');}catch(e){
+    return gate(e.message==='401'?(token?'That token was not valid.':''):'Could not load. Try again.');
+  }
   const msgs=data.messages||[];
   const groups=groupByRecipient(msgs);
   const tOpens=msgs.reduce((s,m)=>s+(m.confirmed_opens||0),0);
@@ -146,7 +171,8 @@ window.toggle=async(row,id)=>{
   }catch(e){box.textContent='Error loading events.';}
 };
 
-if(token)load();else gate();
+// Try the session cookie first; load() falls back to the sign-in gate on 401.
+load();
 </script>
 </body>
 </html>`;

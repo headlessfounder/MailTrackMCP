@@ -1,6 +1,13 @@
 import { Hono } from 'hono'
 import { DASHBOARD_HTML } from './dashboard'
 import { handleMcp } from './mcp'
+import {
+  consumeMagicLink,
+  makeSession,
+  readSession,
+  requestMagicLink,
+  sessionCookie,
+} from './auth'
 
 type Env = {
   DB: D1Database
@@ -11,6 +18,8 @@ type Env = {
   /** Optional: set to enable "first open" email alerts via Resend. */
   RESEND_API_KEY?: string
   NOTIFY_FROM?: string
+  /** Optional: set to enable magic-link login (signs session cookies). */
+  SESSION_SECRET?: string
 }
 
 type User = { id: string; name: string; email: string; api_token: string }
@@ -240,15 +249,55 @@ app.post('/api/admin/users', async (c) => {
 // ---------- authed API (per-user Bearer token) ----------
 
 app.use('/api/*', async (c, next) => {
-  if (c.req.path.startsWith('/api/admin/')) return next()
+  if (c.req.path.startsWith('/api/admin/') || c.req.path.startsWith('/api/auth/')) {
+    return next()
+  }
+  // Agents/scripts authenticate with a personal dt_ token; humans on the
+  // dashboard authenticate with the session cookie set by a magic link.
   const token = (c.req.header('authorization') || '').replace(/^Bearer\s+/i, '')
-  if (!token) return c.json({ error: 'missing bearer token' }, 401)
-  const user = await c.env.DB.prepare('SELECT * FROM users WHERE api_token = ?')
-    .bind(token)
-    .first<User>()
-  if (!user) return c.json({ error: 'invalid token' }, 401)
+  let user: User | null = null
+  if (token) {
+    user = await c.env.DB.prepare('SELECT * FROM users WHERE api_token = ?')
+      .bind(token)
+      .first<User>()
+  } else {
+    const userId = await readSession(c.env, c.req.header('cookie'))
+    if (userId) {
+      user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?')
+        .bind(userId)
+        .first<User>()
+    }
+  }
+  if (!user) return c.json({ error: 'unauthorized' }, 401)
   c.set('user', user)
   return next()
+})
+
+// ---------- magic-link login ----------
+
+app.post('/api/auth/request', async (c) => {
+  if (!c.env.SESSION_SECRET || !c.env.RESEND_API_KEY) {
+    return c.json({ error: 'magic-link login not configured' }, 503)
+  }
+  const { email } = await c.req.json<{ email?: string }>()
+  if (!email) return c.json({ error: 'email required' }, 400)
+  // Response is identical whether or not the address exists.
+  await requestMagicLink(c.env, email, new URL(c.req.url).origin)
+  return c.json({ ok: true })
+})
+
+app.get('/auth/verify', async (c) => {
+  const token = c.req.query('t')
+  if (!token || !c.env.SESSION_SECRET) return c.redirect('/app?err=invalid', 302)
+  const userId = await consumeMagicLink(c.env, token)
+  if (!userId) return c.redirect('/app?err=expired', 302)
+  c.header('Set-Cookie', sessionCookie(await makeSession(c.env, userId)))
+  return c.redirect('/app', 302)
+})
+
+app.post('/api/auth/logout', (c) => {
+  c.header('Set-Cookie', 'dt_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0')
+  return c.json({ ok: true })
 })
 
 type RegisterBody = {

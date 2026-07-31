@@ -41,3 +41,12 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_message ON events(message_id, ts);
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_links_message ON links(message_id);
+
+-- One-time magic-link login tokens (Phase 5)
+CREATE TABLE IF NOT EXISTS login_tokens (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  expires_at TEXT NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_login_tokens_user ON login_tokens(user_id);
