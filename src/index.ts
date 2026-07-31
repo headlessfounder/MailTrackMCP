@@ -163,24 +163,33 @@ async function notifyFirstEngagement(
   const geoNote =
     classification === 'gmail-proxy' ? ' (via Gmail proxy — no location available)' : ''
 
-  await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: env.NOTIFY_FROM || 'DuvalTrack <notify@duvalsoftware.com>',
-      to: [row.user_email],
-      subject: `🔔 ${subject}`,
-      html:
-        `<p><strong>${escapeHtml(row.recipient)}</strong> just ${verb} ` +
-        `<strong>${escapeHtml(row.subject || '(no subject)')}</strong>${geoNote}.</p>` +
-        (row.campaign ? `<p>Campaign: ${escapeHtml(row.campaign)}</p>` : '') +
-        `<p style="color:#666;font-size:13px">First engagement on this message. ` +
-        `See the full timeline in your DuvalTrack dashboard.</p>`,
-    }),
-  }).catch(() => {}) // never let a notification failure break tracking
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: env.NOTIFY_FROM || 'DuvalTrack <notify@notify.duvalsoftware.com>',
+        to: [row.user_email],
+        subject: `🔔 ${subject}`,
+        html:
+          `<p><strong>${escapeHtml(row.recipient)}</strong> just ${verb} ` +
+          `<strong>${escapeHtml(row.subject || '(no subject)')}</strong>${geoNote}.</p>` +
+          (row.campaign ? `<p>Campaign: ${escapeHtml(row.campaign)}</p>` : '') +
+          `<p style="color:#666;font-size:13px">First engagement on this message. ` +
+          `See the full timeline in your DuvalTrack dashboard.</p>`,
+      }),
+    })
+    // Surface delivery problems in logs; a bad key or unverified sender would
+    // otherwise fail invisibly.
+    if (!res.ok) console.error('resend notify failed', res.status, await res.text())
+  } catch (err) {
+    console.error('resend notify threw', String(err))
+  }
+  // Notification problems must never break tracking — that's why this is
+  // wrapped and fired via waitUntil.
 }
 
 const escapeHtml = (s: string) =>
