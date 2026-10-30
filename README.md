@@ -47,7 +47,7 @@ extension.
 - **Dashboard** — per-recipient rollups with expandable event timelines
 - **Passwordless login** — magic link, no passwords stored
 - **Engagement alerts** — email on a recipient's first genuine open or click
-- **MCP server** — four tools over Streamable HTTP
+- **MCP server** — four tools, JSON-RPC 2.0 over HTTP POST, served by the Worker itself
 - **Webhooks** — every genuine open or click POSTed to your endpoint in real time
 
 ## Quick start
@@ -328,8 +328,24 @@ flowchart TD
 
 ## Cost
 
-Fits the Cloudflare **Workers Free** tier (100K requests/day, 5 GB D1) — each open
-or click is one request. Past that, Workers Paid is $5/mo.
+Runs on Cloudflare's **free tier**, which in practice means:
+
+| Limit (free) | Value | What consumes it here |
+|---|---|---|
+| Worker requests | 100,000 / day | 1 per register, 1 per open, 1 per click |
+| D1 rows written | 100,000 / day | ~1 + one per link when registering; 1 per event |
+| D1 rows read | 5,000,000 / day | lookups per event; not a practical constraint |
+| D1 storage | 5 GB | messages, links and events |
+
+**Rows written is the limit you'd reach first**, since registering an email
+writes the message plus one row per link. As a rough shape: ~1,000 emails/day
+with a couple of links each, plus their engagement, lands near 5,000 writes —
+comfortably inside the cap. You'd need tens of thousands of emails a day to
+approach it.
+
+Both daily counters reset at 00:00 UTC. Past these limits, **Workers Paid** is
+$5/month (10M requests and 50M D1 row writes included), which is far more
+headroom than outbound email realistically needs.
 
 ## Responsible use
 
