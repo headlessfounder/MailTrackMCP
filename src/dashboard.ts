@@ -183,7 +183,7 @@ async function loadKeys(){
         '<td>'+k.scopes.split(',').map(x=>'<span class="scope">'+esc(x)+'</span>').join('')+'</td>'+
         '<td>'+(k.daily_register_limit??'—')+'</td><td class="when">'+(k.last_used_at?fmt(k.last_used_at):'never')+'</td>'+
         '<td class="when">'+fmt(k.created_at)+'</td>'+
-        '<td>'+(k.revoked_at?'<span class="muted" style="font-size:12px">revoked</span>':'<button class="revoke" onclick="revoke(\''+k.id+'\')">Revoke</button>')+'</td></tr>').join('')+
+        '<td>'+(k.revoked_at?'<span class="muted" style="font-size:12px">revoked</span>':'<button class="revoke" onclick="revoke(\\''+k.id+'\\')">Revoke</button>')+'</td></tr>').join('')+
       '</tbody></table>':'<p class="muted" style="font-size:13px">No agent keys yet.</p>');
 }
 window.mint=async(ev)=>{
@@ -195,7 +195,7 @@ window.mint=async(ev)=>{
     const r=await api('/api/keys',{method:'POST',body:{label:$('#k-label').value.trim()||null,scopes,daily_register_limit:lim}});
     await loadKeys();
     $('#newkey').innerHTML='<div class="newkey"><strong>Copy this key now — it will not be shown again.</strong>'+
-      '<code>'+esc(r.key)+'</code><div class="muted" style="margin-top:6px">Use it as <code>Authorization: Bearer '+esc(r.key.slice(0,6))+'…</code> in your agent\'s MCP config.</div></div>';
+      '<code>'+esc(r.key)+'</code><div class="muted" style="margin-top:6px">Use it as <code>Authorization: Bearer '+esc(r.key.slice(0,6))+'…</code> in your agent\\'s MCP config.</div></div>';
   }catch(e){alert('Could not create key ('+e.message+').');}
   return false;
 };
