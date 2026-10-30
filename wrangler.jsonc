@@ -1,5 +1,5 @@
 {
-  "name": "grokbottrack",
+  "name": "mailtrackmcp",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
   "workers_dev": true,
@@ -18,7 +18,7 @@
     // go.yourdomain.com) so links match the From address — spam filters care.
     "TRACKING_HOST": "",
     // Sender for sign-in links and alerts. Must be on an email-enabled domain.
-    "NOTIFY_FROM": "GrokBotTrack <notify@yourdomain.com>",
+    "NOTIFY_FROM": "MailTrackMCP <notify@yourdomain.com>",
     // Seconds after send during which a proxied open counts as the sender
     // re-reading their own copy rather than a real recipient open.
     "SELF_OPEN_WINDOW_SEC": "90"
@@ -37,9 +37,9 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "grokbottrack",
+      "database_name": "mailtrackmcp",
       // One-click deploy fills this in for you. Deploying by CLI? Replace it
-      // with the id printed by:  npx wrangler d1 create grokbottrack
+      // with the id printed by:  npx wrangler d1 create mailtrackmcp
       "database_id": "00000000-0000-0000-0000-000000000000"
     }
   ]

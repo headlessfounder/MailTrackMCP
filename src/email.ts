@@ -22,7 +22,7 @@ export type EmailEnv = {
   NOTIFY_FROM?: string
 }
 
-const DEFAULT_FROM = 'GrokBotTrack <notify@example.com>'
+const DEFAULT_FROM = 'MailTrackMCP <notify@example.com>'
 
 /** Splits "Name <addr@domain>" into parts; tolerates a bare address. */
 export function parseFrom(value: string): { email: string; name?: string } {

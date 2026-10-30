@@ -23,7 +23,7 @@ type Ctx = {
   messageSummary: (db: D1Database, userId: string, limit?: number) => Promise<unknown[]>
 }
 
-const SERVER_INFO = { name: 'grokbottrack', version: '1.0.0' }
+const SERVER_INFO = { name: 'mailtrackmcp', version: '1.0.0' }
 
 const TOOLS = [
   {

@@ -1,9 +1,9 @@
-# GrokBotTrack
+# MailTrackMCP
 
 **Self-hosted email open & click tracking that your AI agent can query.**
 One Cloudflare Worker + D1. No server, no per-seat SaaS fee, free tier is plenty.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/headlessfounder/GrokBotTrack)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/headlessfounder/MailTrackMCP)
 
 One click and you have your own copy: Cloudflare clones this repo into your
 GitHub or GitLab account, **creates the D1 database for you**, binds it, and
@@ -13,7 +13,7 @@ it creates the database tables on first visit too. No CLI required.
 Prefer the command line, or want it in an existing repo? See
 [Quick start](#quick-start).
 
-![GrokBotTrack dashboard](docs/dashboard.png)
+![MailTrackMCP dashboard](docs/dashboard.png)
 
 ---
 
@@ -21,14 +21,13 @@ Prefer the command line, or want it in an existing repo? See
 
 Email trackers are a crowded space. Two things here are not:
 
-**1. It ships an MCP server.** Connect it to Claude, Cursor, OpenClaw or any
-MCP-capable agent and ask *"who opened my emails today?"* — or have the agent
+**1. It ships an MCP server.** Connect it to any MCP-capable agent — Claude, Cursor, Grok, OpenClaw — and ask *"who opened my emails today?"* — or have the agent
 register and send tracked mail itself. Tracking that an agent can both **write
 to** and **reason over**.
 
 **2. It tells you when an "open" isn't a read.** Most trackers count every pixel
 hit. Mail clients and security appliances fetch pixels constantly, which is why
-naive open rates are inflated. GrokBotTrack classifies every event and excludes
+naive open rates are inflated. MailTrackMCP classifies every event and excludes
 the noise — see [Trust model](#trust-model).
 
 Because tracking is injected **server-side at send time**, it works for any
@@ -55,10 +54,10 @@ extension.
 The manual path, if you'd rather not use the button above.
 
 ```bash
-git clone https://github.com/headlessfounder/GrokBotTrack && cd GrokBotTrack
+git clone https://github.com/headlessfounder/MailTrackMCP && cd MailTrackMCP
 npm install
 
-npx wrangler d1 create grokbottrack      # put the printed id in wrangler.jsonc
+npx wrangler d1 create mailtrackmcp      # put the printed id in wrangler.jsonc
 npm run db:init                        # create the tables
 npx wrangler deploy
 ```
@@ -108,7 +107,7 @@ curl -X POST https://<your-worker>/api/register \
     "recipient": "them@company.com",
     "subject": "Quick question",
     "campaign": "q4-outbound",
-    "agent_source": "my-script",
+    "agent_source": "your-agent",
     "html": "<html><body><p>Hi — see the <a href=\"https://example.com/demo\">demo</a>.</p></body></html>"
   }'
 ```
@@ -118,12 +117,12 @@ comparable across every tool you send from.
 
 ### Connect an agent (MCP)
 
-Point any MCP-capable agent — Claude, Cursor, OpenClaw — at `/mcp`:
+Point any MCP-capable agent at `/mcp`:
 
 ```json
 {
   "mcpServers": {
-    "grokbottrack": {
+    "mailtrackmcp": {
       "type": "http",
       "url": "https://<your-worker>/mcp",
       "headers": { "Authorization": "Bearer dt_YOUR_TOKEN" }
@@ -137,7 +136,7 @@ Client can only launch stdio servers? Bridge it:
 ```json
 {
   "mcpServers": {
-    "grokbottrack": {
+    "mailtrackmcp": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://<your-worker>/mcp",
                "--transport", "http",

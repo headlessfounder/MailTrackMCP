@@ -1,6 +1,6 @@
-# Wiring your agent or sender to GrokBotTrack
+# Wiring your agent or sender to MailTrackMCP
 
-GrokBotTrack tracks opens and clicks on outbound email. One rule governs every
+MailTrackMCP tracks opens and clicks on outbound email. One rule governs every
 integration:
 
 > **Register the email first, then send the HTML that `register` returns —
@@ -8,7 +8,7 @@ integration:
 > Editing it breaks tracking.
 
 Replace `<your-worker>` below with your deployment's host (for example
-`grokbottrack.your-subdomain.workers.dev`, or your custom tracking domain).
+`mailtrackmcp.your-subdomain.workers.dev`, or your custom tracking domain).
 
 ---
 
@@ -19,7 +19,7 @@ Replace `<your-worker>` below with your deployment's host (for example
 ```json
 {
   "mcpServers": {
-    "grokbottrack": {
+    "mailtrackmcp": {
       "type": "http",
       "url": "https://<your-worker>/mcp",
       "headers": { "Authorization": "Bearer dt_YOUR_TOKEN" }
@@ -33,7 +33,7 @@ If your client can only launch stdio servers, bridge it:
 ```json
 {
   "mcpServers": {
-    "grokbottrack": {
+    "mailtrackmcp": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://<your-worker>/mcp",
                "--transport", "http",
@@ -121,7 +121,8 @@ encode it, then call `users.messages.send`.
 
 ## Agents with an email review card ("Send Tracked")
 
-Some agents (Grok Bot among them) show the user a review card before sending.
+Some agents show the user a review card before sending (Grok Bot and several
+mail assistants work this way).
 **These cards typically render only visible, plain formatting — they strip
 images and hidden elements, so the tracking pixel does not survive the card.**
 Rewritten links do survive, so clicks still track, but opens are lost.
@@ -139,7 +140,7 @@ The workaround is to bypass the card for tracked sends:
 Grant this as a standing permission so it works in future chats:
 
 > Standing permission: when I reply "send tracked" to an email draft card I have
-> reviewed, register that exact email with GrokBotTrack and send the returned
+> reviewed, register that exact email with MailTrackMCP and send the returned
 > tracked HTML from the matching Gmail account. Append my rich HTML signature
 > first. If registration fails, do not send.
 
@@ -156,7 +157,7 @@ you get either none or two.
 2. **If `register` fails, do not send untracked.** Abort and queue or report.
 3. **Always set `campaign` and `agent_source`.** They are what make
    `get_campaign_stats` comparable across every tool you send from.
-4. **Don't enable your ESP's own open/click tracking as well.** GrokBotTrack
+4. **Don't enable your ESP's own open/click tracking as well.** MailTrackMCP
    already injects a pixel and rewrites links; running both double-counts
    events and rewrites links twice.
 5. **Plain-text parts are not tracked.** The pixel and rewritten links live only
@@ -189,7 +190,7 @@ Payload:
   "recipient": "them@company.com",
   "subject": "Quick question",
   "campaign": "q4-outbound",
-  "agent_source": "grokbot",
+  "agent_source": "your-agent",
   "sent_at": "2026-10-29T20:00:00.000Z",
   "occurred_at": "2026-10-29T20:14:03.000Z",
   "classification": "human",
@@ -209,7 +210,7 @@ Payload:
 - **`open_count` / `click_count`** are running totals for that message. A third
   open is a much stronger signal than a first.
 - **Verify the signature.** If you set a secret, each request carries
-  `X-GrokBotTrack-Signature: sha256=<hex>` — an HMAC-SHA256 of the raw body.
+  `X-MailTrack-Signature: sha256=<hex>` — an HMAC-SHA256 of the raw body.
   Check it, or anyone who learns your URL can forge events.
 - Set `WEBHOOK_EVENTS=first` to fire only on first engagement per message.
 

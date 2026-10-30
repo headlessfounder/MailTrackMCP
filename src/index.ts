@@ -21,7 +21,7 @@ type Env = {
   EMAIL?: EmailEnv['EMAIL']
   /** Set to route email through Resend instead of the Cloudflare binding. */
   RESEND_API_KEY?: string
-  /** Sender address, e.g. "GrokBotTrack <notify@yourdomain.com>". */
+  /** Sender address, e.g. "MailTrackMCP <notify@yourdomain.com>". */
   NOTIFY_FROM?: string
   /** Seconds after send during which a proxied open is treated as the sender
    *  re-reading their own copy rather than a genuine recipient open. */
@@ -209,7 +209,7 @@ async function notifyFirstEngagement(
       `<strong>${escapeHtml(row.subject || '(no subject)')}</strong>${geoNote}.</p>` +
       (row.campaign ? `<p>Campaign: ${escapeHtml(row.campaign)}</p>` : '') +
       `<p style="color:#666;font-size:13px">First engagement on this message. ` +
-      `See the full timeline in your GrokBotTrack dashboard.</p>`,
+      `See the full timeline in your MailTrackMCP dashboard.</p>`,
   })
 }
 
@@ -304,7 +304,7 @@ const escapeHtml = (s: string) =>
 
 // ---------- public tracking routes (no auth — hit by recipients' mail clients) ----------
 
-app.get('/', (c) => c.text('GrokBotTrack — internal email tracking'))
+app.get('/', (c) => c.text('MailTrackMCP — internal email tracking'))
 
 app.get('/p/:id', async (c) => {
   const id = c.req.param('id').replace(/\.gif$/, '')
@@ -414,7 +414,7 @@ async function needsSetup(db: D1Database): Promise<boolean> {
 }
 
 const setupPage = (body: string) => `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>GrokBotTrack setup</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>MailTrackMCP setup</title>
 <style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 background:#f4f4f1;color:#0b0b0b;margin:0;display:flex;min-height:100vh;align-items:center;
 justify-content:center}main{background:#fff;border:1px solid #e4e3de;border-radius:14px;
@@ -447,7 +447,7 @@ app.get('/setup', async (c) => {
     )
   }
   return c.html(
-    setupPage(`<h1>Welcome to GrokBotTrack</h1>
+    setupPage(`<h1>Welcome to MailTrackMCP</h1>
 <p>Create the first account. This page disables itself afterwards.</p>
 <form method="post" action="/setup${c.req.query('k') ? `?k=${encodeURIComponent(c.req.query('k')!)}` : ''}">
   <input name="name" placeholder="Your name" required>
@@ -726,7 +726,7 @@ app.post('/api/webhook/test', async (c) => {
     event: 'open',
     message_id: 'test-message',
     recipient: 'test@example.com',
-    subject: 'GrokBotTrack webhook test',
+    subject: 'MailTrackMCP webhook test',
     campaign: 'test',
     agent_source: 'webhook-test',
     sent_at: now(),

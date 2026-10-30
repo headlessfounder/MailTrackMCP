@@ -82,9 +82,9 @@ export async function requestMagicLink(
   const link = `${origin}/auth/verify?t=${encodeURIComponent(token)}`
   const res = await sendEmail(env, {
     to: user.email,
-    subject: 'Your GrokBotTrack sign-in link',
+    subject: 'Your MailTrackMCP sign-in link',
     html:
-      `<p>Click to open your GrokBotTrack dashboard:</p>` +
+      `<p>Click to open your MailTrackMCP dashboard:</p>` +
       `<p><a href="${link}" style="display:inline-block;padding:10px 18px;` +
       `background:#2a78d6;color:#fff;border-radius:8px;text-decoration:none;` +
       `font-family:sans-serif">Open dashboard</a></p>` +

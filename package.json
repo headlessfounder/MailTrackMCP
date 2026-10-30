@@ -1,12 +1,12 @@
 {
-  "name": "grokbottrack",
+  "name": "mailtrackmcp",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "deploy:local": "wrangler deploy -c wrangler.local.jsonc",
     "typecheck": "tsc --noEmit",
-    "db:init": "wrangler d1 execute grokbottrack --remote --file schema.sql"
+    "db:init": "wrangler d1 execute mailtrackmcp --remote --file schema.sql"
   },
   "dependencies": {
     "hono": "^4.6.0"
@@ -16,11 +16,11 @@
     "typescript": "^5.5.0",
     "wrangler": "^4.0.0"
   },
-  "description": "Self-hosted email open/click tracking on Cloudflare Workers, with an MCP server so AI agents can query engagement.",
+  "description": "Self-hosted email open & click tracking on Cloudflare Workers, with an MCP server so any AI agent can register sends and query engagement.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/headlessfounder/GrokBotTrack.git"
+    "url": "https://github.com/headlessfounder/MailTrackMCP.git"
   },
   "keywords": [
     "email-tracking",

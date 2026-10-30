@@ -128,10 +128,10 @@ export async function sendWebhook(
   const body = JSON.stringify(payload)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'User-Agent': 'GrokBotTrack-Webhook/1',
-    'X-GrokBotTrack-Event': payload.event,
+    'User-Agent': 'MailTrackMCP-Webhook/1',
+    'X-MailTrack-Event': payload.event,
   }
-  if (secret) headers['X-GrokBotTrack-Signature'] = `sha256=${await sign(secret, body)}`
+  if (secret) headers['X-MailTrack-Signature'] = `sha256=${await sign(secret, body)}`
   // Sent verbatim so the receiver's expected scheme (Bearer, token, raw key)
   // is preserved exactly as configured.
   if (authHeader) headers['Authorization'] = authHeader.trim()

@@ -7,7 +7,7 @@ issue.
 
 ## What this software does
 
-GrokBotTrack embeds a tracking pixel and rewrites links in outbound email, then
+MailTrackMCP embeds a tracking pixel and rewrites links in outbound email, then
 records when those are fetched. Run it only for correspondence you have a
 legitimate reason to send. See "Responsible use" in the README.
 
@@ -41,7 +41,7 @@ Secrets belong in `wrangler secret put`, never in the repo.
 - **Sessions are HMAC-signed** HttpOnly/Secure cookies; the signature is
   compared without early return.
 - **Webhooks can be signed.** Set a secret and every delivery carries
-  `X-GrokBotTrack-Signature: sha256=<hex>` over the raw body. Verify it —
+  `X-MailTrack-Signature: sha256=<hex>` over the raw body. Verify it —
   otherwise anyone who learns your endpoint URL can forge events.
 - **Tracking ids are 14 random characters** from a 62-character alphabet
   (~83 bits), so message ids are not guessable or enumerable.
