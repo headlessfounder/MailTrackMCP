@@ -6,8 +6,7 @@
     "deploy": "wrangler deploy",
     "deploy:local": "wrangler deploy -c wrangler.local.jsonc",
     "typecheck": "tsc --noEmit",
-    "db:init": "wrangler d1 execute grokbottrack --remote --file schema.sql",
-    "db:init:local": "wrangler d1 execute duvaltrack --remote --file schema.sql -c wrangler.local.jsonc"
+    "db:init": "wrangler d1 execute grokbottrack --remote --file schema.sql"
   },
   "dependencies": {
     "hono": "^4.6.0"
@@ -18,5 +17,18 @@
     "wrangler": "^4.0.0"
   },
   "description": "Self-hosted email open/click tracking on Cloudflare Workers, with an MCP server so AI agents can query engagement.",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/headlessfounder/GrokBotTrack.git"
+  },
+  "keywords": [
+    "email-tracking",
+    "cloudflare-workers",
+    "mcp",
+    "d1",
+    "open-tracking",
+    "click-tracking",
+    "ai-agents"
+  ]
 }

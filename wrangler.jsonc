@@ -4,9 +4,13 @@
   "compatibility_date": "2026-07-01",
   "workers_dev": true,
 
-  // Cloudflare Email Sending — powers magic-link sign-in and engagement alerts.
-  // Enable the domain once with:  npx wrangler email sending enable yourdomain.com
-  "send_email": [{ "name": "EMAIL" }],
+  // OPTIONAL — email powers magic-link sign-in and engagement alerts.
+  // Tracking works fine without it. To enable:
+  //   1. npx wrangler email sending enable yourdomain.com
+  //   2. uncomment the line below and set NOTIFY_FROM to an address on that domain
+  //   3. npx wrangler deploy
+  // (Prefer Resend? Skip this and set a RESEND_API_KEY secret instead.)
+  // "send_email": [{ "name": "EMAIL" }],
 
   "vars": {
     // Host that tracking pixels and links are served from. Leave empty to use
@@ -14,7 +18,7 @@
     // go.yourdomain.com) so links match the From address — spam filters care.
     "TRACKING_HOST": "",
     // Sender for sign-in links and alerts. Must be on an email-enabled domain.
-    "NOTIFY_FROM": "DuvalTrack <notify@yourdomain.com>",
+    "NOTIFY_FROM": "GrokBotTrack <notify@yourdomain.com>",
     // Seconds after send during which a proxied open counts as the sender
     // re-reading their own copy rather than a real recipient open.
     "SELF_OPEN_WINDOW_SEC": "90"
@@ -28,8 +32,9 @@
     {
       "binding": "DB",
       "database_name": "grokbottrack",
-      // Replace with the id printed by:  npx wrangler d1 create grokbottrack
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+      // One-click deploy fills this in for you. Deploying by CLI? Replace it
+      // with the id printed by:  npx wrangler d1 create grokbottrack
+      "database_id": "00000000-0000-0000-0000-000000000000"
     }
   ]
 }

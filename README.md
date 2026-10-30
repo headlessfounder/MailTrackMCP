@@ -305,6 +305,9 @@ npm run typecheck   # tsc --noEmit
 npm run deploy      # ship it
 ```
 
+Keeping deployment-specific settings out of git? Put them in
+`wrangler.local.jsonc` (gitignored) and run `npm run deploy:local`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
