@@ -5,10 +5,13 @@ One Cloudflare Worker + D1. No server, no per-seat SaaS fee, free tier is plenty
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/headlessfounder/GrokBotTrack)
 
-> The button clones and deploys the Worker, but D1 isn't provisioned
-> automatically — you'll still run the two database commands in
-> [Quick start](#quick-start). Cloning and running them yourself is the
-> straightforward path.
+One click and you have your own copy: Cloudflare clones this repo into your
+GitHub or GitLab account, **creates the D1 database for you**, binds it, and
+deploys. Then open `/setup` on your new Worker to create the first account —
+it creates the database tables on first visit too. No CLI required.
+
+Prefer the command line, or want it in an existing repo? See
+[Quick start](#quick-start).
 
 ![GrokBotTrack dashboard](docs/dashboard.png)
 
@@ -49,6 +52,8 @@ extension.
 
 ## Quick start
 
+The manual path, if you'd rather not use the button above.
+
 ```bash
 git clone https://github.com/headlessfounder/GrokBotTrack && cd GrokBotTrack
 npm install
@@ -61,6 +66,14 @@ npx wrangler deploy
 Then open **`https://<your-worker>.workers.dev/setup`** and create the first
 account. That page disables itself once an account exists, and hands you the API
 token agents authenticate with.
+
+Set `ADMIN_TOKEN` and `SESSION_SECRET` as secrets to enable adding teammates and
+magic-link sign-in — see `.dev.vars.example` for the full list:
+
+```bash
+npx wrangler secret put SESSION_SECRET   # openssl rand -hex 32
+npx wrangler secret put ADMIN_TOKEN
+```
 
 ### Optional but recommended
 

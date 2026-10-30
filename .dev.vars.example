@@ -1,0 +1,10 @@
+# Required for magic-link sign-in: any long random string.
+# Generate with:  openssl rand -hex 32
+SESSION_SECRET=
+
+# Required to add users beyond the first one created at /setup.
+ADMIN_TOKEN=
+
+# Optional. Set only if you want to send through Resend instead of
+# Cloudflare Email Sending.
+RESEND_API_KEY=

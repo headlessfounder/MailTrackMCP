@@ -244,6 +244,39 @@ app.get('/l/:id', async (c) => {
 
 // ---------- first-run setup ----------
 
+/**
+ * Creates the schema if it is missing. One-click deploys provision an empty D1
+ * database but never run schema.sql, so first visit to /setup bootstraps it.
+ * Every statement is idempotent, so this is safe to call repeatedly.
+ */
+async function ensureSchema(db: D1Database): Promise<void> {
+  await db.batch([
+    db.prepare(`CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+      api_token TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+      recipient TEXT NOT NULL, subject TEXT, campaign TEXT, agent_source TEXT,
+      sent_at TEXT NOT NULL)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS links (
+      id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id),
+      original_url TEXT NOT NULL)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL REFERENCES messages(id), link_id TEXT,
+      type TEXT NOT NULL CHECK (type IN ('open','click')), ts TEXT NOT NULL,
+      ua TEXT, ip TEXT, country TEXT, region TEXT, city TEXT, timezone TEXT,
+      classification TEXT NOT NULL DEFAULT 'human')`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS login_tokens (
+      token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+      expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0)`),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_events_message ON events(message_id, ts)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, sent_at)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_links_message ON links(message_id)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_login_tokens_user ON login_tokens(user_id)'),
+  ])
+}
+
 /** True only while the instance has no users; gates the open setup page. */
 async function needsSetup(db: D1Database): Promise<boolean> {
   const row = await db.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>()
@@ -264,6 +297,7 @@ background:#f4f4f1;padding:11px;border-radius:8px;font-size:13px;margin:8px 0}
 a{color:#2a78d6}</style></head><body><main>${body}</main></body></html>`
 
 app.get('/setup', async (c) => {
+  await ensureSchema(c.env.DB)
   if (!(await needsSetup(c.env.DB))) {
     return c.html(
       setupPage(
@@ -285,6 +319,7 @@ app.get('/setup', async (c) => {
 })
 
 app.post('/setup', async (c) => {
+  await ensureSchema(c.env.DB)
   if (!(await needsSetup(c.env.DB))) return c.text('Setup already completed', 403)
   const form = await c.req.parseBody()
   const name = String(form.name || '').trim()
