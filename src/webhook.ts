@@ -8,6 +8,70 @@ export type WebhookEnv = {
   WEBHOOK_SECRET?: string
   /** "all" (default) fires on every genuine event; "first" only on the first. */
   WEBHOOK_EVENTS?: string
+  /**
+   * Verbatim Authorization header value for receivers that require one
+   * (e.g. "Bearer abc123"). Store with `wrangler secret put WEBHOOK_AUTH`.
+   */
+  WEBHOOK_AUTH?: string
+  /**
+   * Auth scheme to prepend when WEBHOOK_AUTH holds a bare key, e.g. "Bearer".
+   * Leave unset to send WEBHOOK_AUTH exactly as stored. Having this as config
+   * avoids the common failure of storing a key without its scheme.
+   */
+  WEBHOOK_AUTH_SCHEME?: string
+  /**
+   * Hostname WEBHOOK_AUTH belongs to, e.g. "api.your-receiver.com". Strongly
+   * recommended: without it the credential is sent to whatever webhook URL a
+   * user configures, which would hand your key to any endpoint they choose.
+   */
+  WEBHOOK_AUTH_HOST?: string
+}
+
+/**
+ * Resolves the Authorization header for one delivery. Returns undefined unless
+ * the destination matches WEBHOOK_AUTH_HOST, so a credential meant for one
+ * receiver can never be forwarded to another.
+ */
+/**
+ * Describes the configured Authorization value without revealing it, so a
+ * misconfiguration can be diagnosed without the credential leaving the Worker.
+ */
+export function describeAuth(env: WebhookEnv): Record<string, unknown> {
+  const v = env.WEBHOOK_AUTH
+  if (!v) return { configured: false }
+  const trimmed = v.trim()
+  const scheme = trimmed.split(/\s+/)[0] || ''
+  return {
+    configured: true,
+    length: v.length,
+    had_surrounding_whitespace: v !== trimmed,
+    // Only ever echo a RECOGNISED scheme word. Anything else is likely the
+    // credential itself, so report its shape rather than its content.
+    scheme_word: /^(Bearer|Basic|Token|ApiKey)$/i.test(scheme) ? scheme : '<non-standard>',
+    starts_with_bearer_space: trimmed.startsWith('Bearer '),
+    scheme_prepended: env.WEBHOOK_AUTH_SCHEME || null,
+    word_count: trimmed.split(/\s+/).length,
+    starts_with_quote: /^["']/.test(trimmed),
+    has_non_ascii: /[^\x20-\x7e]/.test(trimmed),
+    auth_host_configured: env.WEBHOOK_AUTH_HOST || null,
+  }
+}
+
+export function authHeaderFor(env: WebhookEnv, url: string): string | undefined {
+  if (!env.WEBHOOK_AUTH) return undefined
+  if (!env.WEBHOOK_AUTH_HOST) return undefined
+  try {
+    if (new URL(url).hostname !== env.WEBHOOK_AUTH_HOST) return undefined
+  } catch {
+    return undefined
+  }
+  const value = env.WEBHOOK_AUTH.trim()
+  const scheme = env.WEBHOOK_AUTH_SCHEME?.trim()
+  if (!scheme) return value
+  // Idempotent: a value that already carries the scheme is left alone.
+  return value.toLowerCase().startsWith(scheme.toLowerCase() + ' ')
+    ? value
+    : `${scheme} ${value}`
 }
 
 export type WebhookPayload = {
@@ -58,7 +122,8 @@ async function sign(secret: string, body: string): Promise<string> {
 export async function sendWebhook(
   url: string,
   secret: string | undefined,
-  payload: WebhookPayload
+  payload: WebhookPayload,
+  authHeader?: string
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   const body = JSON.stringify(payload)
   const headers: Record<string, string> = {
@@ -67,6 +132,9 @@ export async function sendWebhook(
     'X-GrokBotTrack-Event': payload.event,
   }
   if (secret) headers['X-GrokBotTrack-Signature'] = `sha256=${await sign(secret, body)}`
+  // Sent verbatim so the receiver's expected scheme (Bearer, token, raw key)
+  // is preserved exactly as configured.
+  if (authHeader) headers['Authorization'] = authHeader.trim()
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

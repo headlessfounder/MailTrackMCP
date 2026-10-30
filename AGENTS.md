@@ -213,6 +213,28 @@ Payload:
   Check it, or anyone who learns your URL can forge events.
 - Set `WEBHOOK_EVENTS=first` to fire only on first engagement per message.
 
+**Receiver requires its own Authorization header?** Store the key and declare
+the scheme, so you never have to get a prefix right at a masked prompt:
+
+```bash
+npx wrangler secret put WEBHOOK_AUTH          # paste the bare key
+```
+
+```jsonc
+"vars": {
+  "WEBHOOK_AUTH_SCHEME": "Bearer",            // prepended if not already present
+  "WEBHOOK_AUTH_HOST": "api.your-receiver.com" // header sent to this host ONLY
+}
+```
+
+`WEBHOOK_AUTH_HOST` is important on a multi-user instance: without it the
+credential would be sent to whatever webhook URL any user configures, handing
+your key to an endpoint of their choosing.
+
+`POST /api/webhook/test` returns an `auth_shape` object describing the
+configured header (length, scheme, whether it carries stray whitespace) without
+revealing the key — use it to diagnose 401s from a receiver.
+
 ## Reporting results honestly
 
 Every event carries a classification. When summarising for a human:

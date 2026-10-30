@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { DASHBOARD_HTML } from './dashboard'
 import { handleMcp } from './mcp'
 import { type EmailEnv, emailConfigured, sendEmail } from './email'
-import { type WebhookEnv, type WebhookPayload, sendWebhook } from './webhook'
+import { type WebhookEnv, type WebhookPayload, authHeaderFor, describeAuth, sendWebhook } from './webhook'
 import {
   consumeMagicLink,
   makeSession,
@@ -30,6 +30,10 @@ type Env = {
   WEBHOOK_URL?: string
   WEBHOOK_SECRET?: string
   WEBHOOK_EVENTS?: string
+  /** Verbatim Authorization header for receivers that require one. */
+  WEBHOOK_AUTH?: string
+  /** Hostname WEBHOOK_AUTH is valid for; the header is sent nowhere else. */
+  WEBHOOK_AUTH_HOST?: string
   /** Optional: set to enable magic-link login (signs session cookies). */
   SESSION_SECRET?: string
 }
@@ -292,7 +296,7 @@ async function dispatchWebhook(
     if (link) payload.link_url = link.original_url
   }
 
-  await sendWebhook(url, row.webhook_secret || env.WEBHOOK_SECRET, payload)
+  await sendWebhook(url, row.webhook_secret || env.WEBHOOK_SECRET, payload, authHeaderFor(env, url))
 }
 
 const escapeHtml = (s: string) =>
@@ -733,8 +737,14 @@ app.post('/api/webhook/test', async (c) => {
     open_count: 1,
     click_count: 0,
     location: { city: 'Testville', region: 'Test', country: 'US', timezone: 'UTC' },
+  }, authHeaderFor(c.env, url))
+  return c.json({
+    delivered: res.ok,
+    status: res.status ?? null,
+    error: res.error ?? null,
+    sent_authorization_header: Boolean(authHeaderFor(c.env, url)),
+    auth_shape: describeAuth(c.env),
   })
-  return c.json({ delivered: res.ok, status: res.status ?? null, error: res.error ?? null })
 })
 
 // ---------- MCP endpoint (Bearer user token; scoped to that user) ----------

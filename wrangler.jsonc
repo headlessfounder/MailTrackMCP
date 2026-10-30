@@ -22,6 +22,12 @@
     // Seconds after send during which a proxied open counts as the sender
     // re-reading their own copy rather than a real recipient open.
     "SELF_OPEN_WINDOW_SEC": "90"
+    // Receiver requires an Authorization header? Store the value with
+    //   npx wrangler secret put WEBHOOK_AUTH
+    // and set the hostname it belongs to here, so the credential is never
+    // sent to any other webhook URL:
+    // ,"WEBHOOK_AUTH_SCHEME": "Bearer"
+    // ,"WEBHOOK_AUTH_HOST": "api.your-receiver.com"
   },
 
   // To serve tracking from a custom domain, uncomment and set your subdomain.
