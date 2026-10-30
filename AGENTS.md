@@ -104,6 +104,17 @@ Read endpoints use the same Bearer token:
 
 ---
 
+## Any sender works
+
+Nothing here is Gmail-specific. The pixel and rewritten links live in the HTML
+body, so any transport that sends HTML can carry them — SMTP, Outlook/Microsoft
+365 (Graph or SMTP), Gmail, Resend, SES, Postmark, Mailgun, SendGrid, n8n,
+Zapier, or your own backend. Register first, send the returned HTML as the
+`text/html` part.
+
+Gmail gets its own section below only because its review-card and draft
+behaviour needs explaining — not because it is required.
+
 ## Sending through Gmail
 
 The Gmail MCP exposes `create_draft` with an `htmlBody` field but no send tool,

@@ -48,6 +48,7 @@ extension.
 - **Passwordless login** — magic link, no passwords stored
 - **Engagement alerts** — email on a recipient's first genuine open or click
 - **MCP server** — four tools over Streamable HTTP
+- **Webhooks** — every genuine open or click POSTed to your endpoint in real time
 
 ## Quick start
 
@@ -98,6 +99,25 @@ npx wrangler secret put SESSION_SECRET   # any long random string; enables login
 
 **The one rule: register before sending, then send the returned HTML unmodified.**
 It already contains the pixel and rewritten links.
+
+### Works with any sender
+
+Tracking is injected **server-side, into the HTML itself** — nothing is tied to
+a particular mail provider or OAuth scheme. If your sender can deliver an HTML
+body, it works:
+
+| | |
+|---|---|
+| **Plain SMTP** | any server, any language |
+| **Outlook / Microsoft 365** | Graph API, SMTP, or an Office add-in |
+| **Gmail / Google Workspace** | Gmail API, or an agent creating drafts |
+| **Transactional ESPs** | Resend, Amazon SES, Postmark, Mailgun, SendGrid |
+| **Automation tools** | n8n, Zapier, Make — one HTTP node before the email node |
+| **Your own backend** | one HTTP call before you hand off to SMTP |
+
+The only real requirements: **send HTML** (a plain-text-only part carries no
+pixel and no rewritten links), and accept that recipients who block remote
+images won't register opens — clicks still will.
 
 ```bash
 curl -X POST https://<your-worker>/api/register \
@@ -188,6 +208,55 @@ curl -X POST https://<your-worker>/api/admin/users \
 Each person gets their own token, their own isolated data, and their own
 dashboard. Agents using one person's token only ever see that person's sends.
 
+## Webhooks
+
+Push instead of poll — every genuine open or click POSTs to your endpoint the
+moment it happens.
+
+```bash
+curl -X PUT https://<your-worker>/api/webhook \
+  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"webhook_url":"https://your-service/hooks/email","webhook_secret":"a-long-random-string"}'
+
+# check your receiver before relying on it
+curl -X POST https://<your-worker>/api/webhook/test -H "Authorization: Bearer dt_YOUR_TOKEN"
+```
+
+```json
+{
+  "event": "click",
+  "message_id": "abc123",
+  "recipient": "them@company.com",
+  "subject": "Quick question",
+  "campaign": "q4-outbound",
+  "agent_source": "your-agent",
+  "occurred_at": "2026-10-29T20:14:03.000Z",
+  "classification": "human",
+  "is_first_engagement": true,
+  "open_count": 3,
+  "click_count": 1,
+  "location": { "city": "Austin", "region": "Texas", "country": "US" },
+  "link_url": "https://example.com/demo"
+}
+```
+
+- **Only genuine engagement fires.** `sender-echo`, `apple-prefetch` and
+  `scanner` events never produce a webhook, so anything you receive is real.
+- **`location` is `null` on proxied opens**, with a `location_note` saying why —
+  a receiver can't mistake Google's datacenter for your prospect.
+- **Sign your deliveries.** With a secret set, each request carries
+  `X-MailTrack-Signature: sha256=<hex>`, an HMAC of the raw body. Verify it, or
+  anyone who learns your URL can forge events.
+- **Receiver needs its own auth header?** Store it with
+  `wrangler secret put WEBHOOK_AUTH`, then set `WEBHOOK_AUTH_SCHEME` (e.g.
+  `"Bearer"`) and `WEBHOOK_AUTH_HOST`. The header is sent to that host **only**,
+  so your key can't leak to another user's webhook URL.
+- `WEBHOOK_EVENTS=first` limits firing to first engagement per message.
+
+Full details, including signature-verification code, are in
+[AGENTS.md](AGENTS.md).
+
 ## Trust model
 
 Not every pixel fetch is a human reading your email.
@@ -222,6 +291,9 @@ rather than inflating your numbers. Tune with `SELF_OPEN_WINDOW_SEC`.
 | `GET /api/summary` | Bearer / session | Per-message rollup |
 | `GET /api/messages/:id/events` | Bearer / session | Event timeline |
 | `POST /mcp` | Bearer | MCP server (JSON-RPC 2.0) |
+| `GET /api/webhook` | Bearer / session | Read your webhook settings |
+| `PUT /api/webhook` | Bearer / session | Set webhook URL + signing secret |
+| `POST /api/webhook/test` | Bearer / session | Send a sample payload to your receiver |
 | `GET /app` | session or token | Dashboard |
 | `GET /setup` | first run only | Create the first account |
 | `POST /api/admin/users` | `x-admin-token` | Add further users |
