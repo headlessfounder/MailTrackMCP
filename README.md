@@ -277,6 +277,12 @@ Email tracking is a real privacy consideration, not a neutral one.
 The classification system exists partly for this reason: honest numbers you can
 act on beat inflated ones that flatter you.
 
+## Security
+
+Set `ADMIN_TOKEN` before sharing your Worker URL: `/setup` is open while the
+instance has no accounts, and the token closes that window. Full notes, and what
+the system does and doesn't protect against, are in [SECURITY.md](SECURITY.md).
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

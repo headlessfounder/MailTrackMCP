@@ -89,7 +89,7 @@ function gate(msg){
              err==='invalid'?'That link was not valid. Request a new one.':(msg||'');
   $('#root').innerHTML='<div class="gate"><h1>GrokBotTrack</h1>'+
     (note?'<p class="muted">'+esc(note)+'</p>':'<p class="muted">Sign in to see your tracked emails</p>')+
-    '<input id="email" type="email" placeholder="you@duvalsoftware.com" autofocus>'+
+    '<input id="email" type="email" placeholder="you@yourdomain.com" autofocus>'+
     '<button onclick="sendLink()">Email me a sign-in link</button>'+
     '<p id="sent" class="muted" style="display:none;margin-top:14px">'+
     'If that address has an account, a sign-in link is on its way. It expires in 15 minutes.</p>'+

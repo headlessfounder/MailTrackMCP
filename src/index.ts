@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { DASHBOARD_HTML } from './dashboard'
 import { handleMcp } from './mcp'
 import { type EmailEnv, emailConfigured, sendEmail } from './email'
+import { type WebhookEnv, type WebhookPayload, sendWebhook } from './webhook'
 import {
   consumeMagicLink,
   makeSession,
@@ -13,7 +14,7 @@ import {
 type Env = {
   DB: D1Database
   ADMIN_TOKEN: string
-  /** Canonical host that pixel + link URLs are built on (e.g. go.duvalsoftware.com).
+  /** Canonical host that pixel + link URLs are built on (e.g. go.yourdomain.com).
    *  Falls back to the request origin so the worker still works without it. */
   TRACKING_HOST?: string
   /** Cloudflare Email Sending binding. Default transport for alerts + login. */
@@ -25,11 +26,22 @@ type Env = {
   /** Seconds after send during which a proxied open is treated as the sender
    *  re-reading their own copy rather than a genuine recipient open. */
   SELF_OPEN_WINDOW_SEC?: string
+  /** Account-wide webhook defaults; per-user settings override these. */
+  WEBHOOK_URL?: string
+  WEBHOOK_SECRET?: string
+  WEBHOOK_EVENTS?: string
   /** Optional: set to enable magic-link login (signs session cookies). */
   SESSION_SECRET?: string
 }
 
-type User = { id: string; name: string; email: string; api_token: string }
+type User = {
+  id: string
+  name: string
+  email: string
+  api_token: string
+  webhook_url?: string | null
+  webhook_secret?: string | null
+}
 
 /** Where tracked pixel/link URLs live. Pinning this to a custom domain keeps the
  *  embedded URLs stable regardless of which host the register call arrived on. */
@@ -197,6 +209,92 @@ async function notifyFirstEngagement(
   })
 }
 
+/**
+ * Builds and dispatches the engagement webhook for one event. Bot noise never
+ * fires; location is only included when the fetch came from the reader rather
+ * than a proxy, so receivers can't mistake a datacenter for a prospect.
+ */
+async function dispatchWebhook(
+  env: Env,
+  messageId: string,
+  linkId: string | null,
+  type: 'open' | 'click',
+  classification: string,
+  cf: IncomingRequestCfProperties | undefined,
+  isFirst: boolean
+) {
+  const confirmed =
+    type === 'click' ? classification === 'human' : REAL_OPEN.includes(classification)
+  if (!confirmed) return
+
+  const row = await env.DB.prepare(
+    `SELECT m.recipient, m.subject, m.campaign, m.agent_source, m.sent_at,
+            u.webhook_url, u.webhook_secret
+     FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?`
+  )
+    .bind(messageId)
+    .first<{
+      recipient: string
+      subject: string | null
+      campaign: string | null
+      agent_source: string | null
+      sent_at: string
+      webhook_url: string | null
+      webhook_secret: string | null
+    }>()
+  if (!row) return
+
+  const url = row.webhook_url || env.WEBHOOK_URL
+  if (!url) return
+  if ((env.WEBHOOK_EVENTS || 'all') === 'first' && !isFirst) return
+
+  const counts = await env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN type='open'  AND classification IN ('human','gmail-proxy') THEN 1 ELSE 0 END) AS opens,
+       SUM(CASE WHEN type='click' AND classification='human' THEN 1 ELSE 0 END) AS clicks
+     FROM events WHERE message_id = ?`
+  )
+    .bind(messageId)
+    .first<{ opens: number; clicks: number }>()
+
+  // A proxied open geolocates to the proxy, not the reader — withhold it rather
+  // than let a receiver report a datacenter as the prospect's location.
+  const proxied = classification !== 'human'
+  const payload: WebhookPayload = {
+    event: type,
+    message_id: messageId,
+    recipient: row.recipient,
+    subject: row.subject,
+    campaign: row.campaign,
+    agent_source: row.agent_source,
+    sent_at: row.sent_at,
+    occurred_at: now(),
+    classification,
+    is_confirmed: true,
+    is_first_engagement: isFirst,
+    open_count: counts?.opens ?? 0,
+    click_count: counts?.clicks ?? 0,
+    location: proxied
+      ? null
+      : {
+          city: cf?.city as string | undefined,
+          region: cf?.region as string | undefined,
+          country: cf?.country as string | undefined,
+          timezone: cf?.timezone as string | undefined,
+        },
+    ...(proxied ? { location_note: `withheld: ${classification} fetch, not the reader` } : {}),
+  }
+
+  if (linkId) {
+    const link = await env.DB.prepare('SELECT original_url FROM links WHERE id = ?')
+      .bind(linkId)
+      .first<{ original_url: string }>()
+    if (link) payload.link_url = link.original_url
+  }
+
+  await sendWebhook(url, row.webhook_secret || env.WEBHOOK_SECRET, payload)
+}
+
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!))
 
@@ -211,9 +309,12 @@ app.get('/p/:id', async (c) => {
     .first<{ id: string; sent_at: string }>()
   if (msg) {
     const cls = await logEvent(c, msg.id, null, 'open', msg.sent_at)
-    if (await isFirstRealEngagement(c.env.DB, msg.id, 'open', cls)) {
-      c.executionCtx.waitUntil(notifyFirstEngagement(c.env, msg.id, 'open', cls))
-    }
+    const first = await isFirstRealEngagement(c.env.DB, msg.id, 'open', cls)
+    const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf
+    if (first) c.executionCtx.waitUntil(notifyFirstEngagement(c.env, msg.id, 'open', cls))
+    c.executionCtx.waitUntil(
+      dispatchWebhook(c.env, msg.id, null, 'open', cls, cf, first)
+    )
   }
   return new Response(PIXEL, {
     headers: {
@@ -236,9 +337,14 @@ app.get('/l/:id', async (c) => {
     .first<{ id: string; original_url: string; message_id: string; sent_at: string }>()
   if (!link) return c.text('Not found', 404)
   const cls = await logEvent(c, link.message_id, link.id, 'click', link.sent_at)
-  if (await isFirstRealEngagement(c.env.DB, link.message_id, 'click', cls)) {
+  const first = await isFirstRealEngagement(c.env.DB, link.message_id, 'click', cls)
+  const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf
+  if (first) {
     c.executionCtx.waitUntil(notifyFirstEngagement(c.env, link.message_id, 'click', cls))
   }
+  c.executionCtx.waitUntil(
+    dispatchWebhook(c.env, link.message_id, link.id, 'click', cls, cf, first)
+  )
   return c.redirect(link.original_url, 302)
 })
 
@@ -275,6 +381,26 @@ async function ensureSchema(db: D1Database): Promise<void> {
     db.prepare('CREATE INDEX IF NOT EXISTS idx_links_message ON links(message_id)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_login_tokens_user ON login_tokens(user_id)'),
   ])
+  // Older databases predate per-user webhooks; ALTER fails harmlessly if the
+  // column is already there, so each one is attempted independently.
+  for (const col of ['webhook_url TEXT', 'webhook_secret TEXT']) {
+    try {
+      await db.prepare(`ALTER TABLE users ADD COLUMN ${col}`).run()
+    } catch {
+      /* column already exists */
+    }
+  }
+}
+
+/**
+ * /setup is open while the instance has no users, so that one-click deploys
+ * work without a CLI. That leaves a window in which anyone who knows the URL
+ * could claim the instance, so when ADMIN_TOKEN is configured we additionally
+ * require it — letting security-conscious deployments close the window.
+ */
+function setupAuthorised(c: { env: Env; req: { query: (k: string) => string | undefined; header: (h: string) => string | undefined } }): boolean {
+  if (!c.env.ADMIN_TOKEN) return true
+  return c.req.query('k') === c.env.ADMIN_TOKEN || c.req.header('x-admin-token') === c.env.ADMIN_TOKEN
 }
 
 /** True only while the instance has no users; gates the open setup page. */
@@ -298,6 +424,15 @@ a{color:#2a78d6}</style></head><body><main>${body}</main></body></html>`
 
 app.get('/setup', async (c) => {
   await ensureSchema(c.env.DB)
+  if (!setupAuthorised(c)) {
+    return c.html(
+      setupPage(
+        `<h1>Setup locked</h1><p>This instance has an admin token configured. ` +
+          `Open <code>/setup?k=YOUR_ADMIN_TOKEN</code> to continue.</p>`
+      ),
+      403
+    )
+  }
   if (!(await needsSetup(c.env.DB))) {
     return c.html(
       setupPage(
@@ -310,7 +445,7 @@ app.get('/setup', async (c) => {
   return c.html(
     setupPage(`<h1>Welcome to GrokBotTrack</h1>
 <p>Create the first account. This page disables itself afterwards.</p>
-<form method="post" action="/setup">
+<form method="post" action="/setup${c.req.query('k') ? `?k=${encodeURIComponent(c.req.query('k')!)}` : ''}">
   <input name="name" placeholder="Your name" required>
   <input name="email" type="email" placeholder="you@yourdomain.com" required>
   <button type="submit">Create account</button>
@@ -320,6 +455,7 @@ app.get('/setup', async (c) => {
 
 app.post('/setup', async (c) => {
   await ensureSchema(c.env.DB)
+  if (!setupAuthorised(c)) return c.text('Setup locked: admin token required', 403)
   if (!(await needsSetup(c.env.DB))) return c.text('Setup already completed', 403)
   const form = await c.req.parseBody()
   const name = String(form.name || '').trim()
@@ -538,6 +674,67 @@ app.get('/api/messages/:id/events', async (c) => {
     .bind(c.req.param('id'))
     .all()
   return c.json({ events: results })
+})
+
+// ---------- webhook configuration ----------
+
+app.get('/api/webhook', async (c) => {
+  const user = c.get('user')
+  const row = await c.env.DB.prepare(
+    'SELECT webhook_url, webhook_secret FROM users WHERE id = ?'
+  )
+    .bind(user.id)
+    .first<{ webhook_url: string | null; webhook_secret: string | null }>()
+  return c.json({
+    webhook_url: row?.webhook_url || null,
+    // Never echo the secret back; only say whether one is set.
+    has_secret: Boolean(row?.webhook_secret),
+    account_default: c.env.WEBHOOK_URL || null,
+    events: c.env.WEBHOOK_EVENTS || 'all',
+  })
+})
+
+app.put('/api/webhook', async (c) => {
+  const user = c.get('user')
+  const body = await c.req.json<{ webhook_url?: string | null; webhook_secret?: string | null }>()
+  const url = body.webhook_url?.trim() || null
+  if (url && !/^https:\/\//i.test(url)) {
+    return c.json({ error: 'webhook_url must be https' }, 400)
+  }
+  await c.env.DB.prepare('UPDATE users SET webhook_url = ?, webhook_secret = ? WHERE id = ?')
+    .bind(url, body.webhook_secret?.trim() || null, user.id)
+    .run()
+  return c.json({ ok: true, webhook_url: url, has_secret: Boolean(body.webhook_secret) })
+})
+
+/** Sends a sample payload so you can verify the receiver before going live. */
+app.post('/api/webhook/test', async (c) => {
+  const user = c.get('user')
+  const row = await c.env.DB.prepare(
+    'SELECT webhook_url, webhook_secret FROM users WHERE id = ?'
+  )
+    .bind(user.id)
+    .first<{ webhook_url: string | null; webhook_secret: string | null }>()
+  const url = row?.webhook_url || c.env.WEBHOOK_URL
+  if (!url) return c.json({ error: 'no webhook configured' }, 400)
+
+  const res = await sendWebhook(url, row?.webhook_secret || c.env.WEBHOOK_SECRET, {
+    event: 'open',
+    message_id: 'test-message',
+    recipient: 'test@example.com',
+    subject: 'GrokBotTrack webhook test',
+    campaign: 'test',
+    agent_source: 'webhook-test',
+    sent_at: now(),
+    occurred_at: now(),
+    classification: 'human',
+    is_confirmed: true,
+    is_first_engagement: true,
+    open_count: 1,
+    click_count: 0,
+    location: { city: 'Testville', region: 'Test', country: 'US', timezone: 'UTC' },
+  })
+  return c.json({ delivered: res.ok, status: res.status ?? null, error: res.error ?? null })
 })
 
 // ---------- MCP endpoint (Bearer user token; scoped to that user) ----------

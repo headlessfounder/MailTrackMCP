@@ -119,6 +119,37 @@ encode it, then call `users.messages.send`.
 
 ---
 
+## Agents with an email review card ("Send Tracked")
+
+Some agents (Grok Bot among them) show the user a review card before sending.
+**These cards typically render only visible, plain formatting — they strip
+images and hidden elements, so the tracking pixel does not survive the card.**
+Rewritten links do survive, so clicks still track, but opens are lost.
+
+The workaround is to bypass the card for tracked sends:
+
+1. The user reviews the draft on the card as normal.
+2. Instead of pressing **Send**, they reply **`send tracked`** in chat.
+3. The agent takes the reviewed text **verbatim**, appends the rich HTML
+   signature for the sending account, registers it, and sends the returned HTML
+   itself through the Gmail connector as `htmlBody`.
+4. The agent confirms it sent, and reminds the user **not** to also press Send
+   on the card — that would deliver a second, untracked copy.
+
+Grant this as a standing permission so it works in future chats:
+
+> Standing permission: when I reply "send tracked" to an email draft card I have
+> reviewed, register that exact email with GrokBotTrack and send the returned
+> tracked HTML from the matching Gmail account. Append my rich HTML signature
+> first. If registration fails, do not send.
+
+**Signatures:** the card appends the account's Gmail signature on its own, so a
+normal card send should end with no signature block. On a `send tracked` send
+the card is bypassed, so the agent must append the signature itself — otherwise
+you get either none or two.
+
+**Replies:** pass the original message id so the email stays in its thread.
+
 ## Rules that matter
 
 1. **Send the returned HTML unmodified.** Any edit can break the pixel or links.
@@ -133,6 +164,54 @@ encode it, then call `users.messages.send`.
    go untracked.
 6. **Gmail sending limits** — Google Workspace caps around 2,000 recipients/day
    and API sends count toward it. Route bulk sequences through a dedicated ESP.
+
+## Getting notified in real time (webhooks)
+
+Rather than polling, have engagement pushed to you. Set a webhook on your
+account and every genuine open or click POSTs to it immediately:
+
+```bash
+curl -X PUT https://<your-worker>/api/webhook \
+  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"webhook_url":"https://your-agent/hooks/email","webhook_secret":"a-long-random-string"}'
+
+# fire a sample payload at it to check your receiver
+curl -X POST https://<your-worker>/api/webhook/test -H "Authorization: Bearer dt_YOUR_TOKEN"
+```
+
+Payload:
+
+```json
+{
+  "event": "open",
+  "message_id": "abc123",
+  "recipient": "them@company.com",
+  "subject": "Quick question",
+  "campaign": "q4-outbound",
+  "agent_source": "grokbot",
+  "sent_at": "2026-10-29T20:00:00.000Z",
+  "occurred_at": "2026-10-29T20:14:03.000Z",
+  "classification": "human",
+  "is_confirmed": true,
+  "is_first_engagement": true,
+  "open_count": 1,
+  "click_count": 0,
+  "location": { "city": "Austin", "region": "Texas", "country": "US", "timezone": "America/Chicago" },
+  "link_url": "https://example.com/demo"
+}
+```
+
+- **Only genuine engagement fires.** `sender-echo`, `apple-prefetch` and
+  `scanner` events never produce a webhook.
+- **`location` is `null` for proxied opens**, with a `location_note` explaining
+  why — so a receiver can't mistake Google's datacenter for the prospect.
+- **`open_count` / `click_count`** are running totals for that message. A third
+  open is a much stronger signal than a first.
+- **Verify the signature.** If you set a secret, each request carries
+  `X-GrokBotTrack-Signature: sha256=<hex>` — an HMAC-SHA256 of the raw body.
+  Check it, or anyone who learns your URL can forge events.
+- Set `WEBHOOK_EVENTS=first` to fire only on first engagement per message.
 
 ## Reporting results honestly
 

@@ -4,7 +4,10 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   api_token TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- Per-user engagement webhook; falls back to WEBHOOK_URL when unset.
+  webhook_url TEXT,
+  webhook_secret TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
