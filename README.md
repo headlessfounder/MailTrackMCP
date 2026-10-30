@@ -5,6 +5,11 @@ One Cloudflare Worker + D1. No server, no per-seat SaaS fee, free tier is plenty
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/headlessfounder/GrokBotTrack)
 
+> The button clones and deploys the Worker, but D1 isn't provisioned
+> automatically — you'll still run the two database commands in
+> [Quick start](#quick-start). Cloning and running them yourself is the
+> straightforward path.
+
 ![GrokBotTrack dashboard](docs/dashboard.png)
 
 ---
@@ -100,6 +105,8 @@ comparable across every tool you send from.
 
 ### Connect an agent (MCP)
 
+Point any MCP-capable agent — Claude, Cursor, OpenClaw — at `/mcp`:
+
 ```json
 {
   "mcpServers": {
@@ -112,12 +119,62 @@ comparable across every tool you send from.
 }
 ```
 
-| Tool | Purpose |
-|---|---|
-| `register_tracked_email` | Returns `tracked_html` to send |
-| `list_recent_emails` | Recent sends with open/click counts |
-| `get_email_status` | Full event timeline for one message |
-| `get_campaign_stats` | Totals grouped by campaign |
+Client can only launch stdio servers? Bridge it:
+
+```json
+{
+  "mcpServers": {
+    "grokbottrack": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://<your-worker>/mcp",
+               "--transport", "http",
+               "--header", "Authorization: Bearer dt_YOUR_TOKEN"]
+    }
+  }
+}
+```
+
+Verify the connection — this should list four tools:
+
+```bash
+curl -s -X POST https://<your-worker>/mcp \
+  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `register_tracked_email` | `recipient`, `html`, `subject?`, `campaign?`, `agent_source?` | `message_id` + `tracked_html` to send verbatim |
+| `list_recent_emails` | `limit?` | Sends with `confirmed_opens`, `raw_opens`, `clicks`, `last_human_activity` |
+| `get_email_status` | `message_id` | Event timeline: type, time, location, classification |
+| `get_campaign_stats` | — | Per-campaign emails, recipients, opens, clicks |
+
+Then just ask your agent:
+
+- *"Who opened my emails today?"*
+- *"Has anyone at Northwind clicked the proposal link?"*
+- *"Which campaign has the best open rate?"*
+- *"Send this to sarah@example.com and track it."*
+
+The full integration contract — including Gmail drafts, failure handling, and
+how agents should report classifications honestly — is in
+**[AGENTS.md](AGENTS.md)**.
+
+### Adding more people
+
+The first account comes from `/setup`. Add teammates with the admin token
+(`npx wrangler secret put ADMIN_TOKEN` first):
+
+```bash
+curl -X POST https://<your-worker>/api/admin/users \
+  -H "x-admin-token: $ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"name":"Jane Smith","email":"jane@yourdomain.com"}'
+```
+
+Each person gets their own token, their own isolated data, and their own
+dashboard. Agents using one person's token only ever see that person's sends.
 
 ## Trust model
 
@@ -206,6 +263,20 @@ Email tracking is a real privacy consideration, not a neutral one.
 
 The classification system exists partly for this reason: honest numbers you can
 act on beat inflated ones that flatter you.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `401` from the API or MCP | Token missing, wrong, or not prefixed with `Bearer ` |
+| MCP connects but returns no data | Wrong user's token — data is scoped per token |
+| Sign-in says "not configured" | No email provider, or `SESSION_SECRET` unset |
+| Sign-in link never arrives | Address doesn't match an account. The endpoint replies identically either way so it can't be used to enumerate users |
+| Opens never register | Recipient blocks remote images — common and legitimate. Use clicks as your signal |
+| Opens look inflated | Check classifications; `confirmed_opens` already excludes scanners and prefetches |
+| Your own reads show as opens | Raise `SELF_OPEN_WINDOW_SEC` |
+| Links look wrong in sent mail | `TRACKING_HOST` unset or not matching the deployed custom domain |
+| `/setup` returns 403 | An account already exists — that page self-disables |
 
 ## Development
 
