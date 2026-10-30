@@ -1,23 +1,35 @@
 {
-  "name": "duvaltrack",
+  "name": "grokbottrack",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
-  // Keep the workers.dev host alive: the registered MCP endpoint and existing
-  // dashboard links point at it. Tracking URLs use TRACKING_HOST regardless.
   "workers_dev": true,
+
+  // Cloudflare Email Sending — powers magic-link sign-in and engagement alerts.
+  // Enable the domain once with:  npx wrangler email sending enable yourdomain.com
+  "send_email": [{ "name": "EMAIL" }],
+
   "vars": {
-    // Canonical host for pixel + link URLs. Matches the sending domain so links
-    // don't look like phishing to spam filters.
-    "TRACKING_HOST": "go.duvalsoftware.com"
+    // Host that tracking pixels and links are served from. Leave empty to use
+    // the Worker's own origin; set a subdomain of your SENDING domain (e.g.
+    // go.yourdomain.com) so links match the From address — spam filters care.
+    "TRACKING_HOST": "",
+    // Sender for sign-in links and alerts. Must be on an email-enabled domain.
+    "NOTIFY_FROM": "DuvalTrack <notify@yourdomain.com>",
+    // Seconds after send during which a proxied open counts as the sender
+    // re-reading their own copy rather than a real recipient open.
+    "SELF_OPEN_WINDOW_SEC": "90"
   },
-  "routes": [
-    { "pattern": "go.duvalsoftware.com", "custom_domain": true }
-  ],
+
+  // To serve tracking from a custom domain, uncomment and set your subdomain.
+  // It must be a zone in the same Cloudflare account.
+  // "routes": [{ "pattern": "go.yourdomain.com", "custom_domain": true }],
+
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "duvaltrack",
-      "database_id": "1440819e-9915-4100-9b6b-2c71744b3252"
+      "database_name": "grokbottrack",
+      // Replace with the id printed by:  npx wrangler d1 create grokbottrack
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
     }
   ]
 }

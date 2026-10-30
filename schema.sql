@@ -1,4 +1,4 @@
--- DuvalTrack schema — multi-user from day one
+-- GrokBotTrack schema — multi-user from day one
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

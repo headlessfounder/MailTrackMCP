@@ -1,9 +1,13 @@
 {
-  "name": "duvaltrack",
+  "name": "grokbottrack",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "deploy:local": "wrangler deploy -c wrangler.local.jsonc",
+    "typecheck": "tsc --noEmit",
+    "db:init": "wrangler d1 execute grokbottrack --remote --file schema.sql",
+    "db:init:local": "wrangler d1 execute duvaltrack --remote --file schema.sql -c wrangler.local.jsonc"
   },
   "dependencies": {
     "hono": "^4.6.0"
@@ -12,5 +16,7 @@
     "@cloudflare/workers-types": "^5.20260714.1",
     "typescript": "^5.5.0",
     "wrangler": "^4.0.0"
-  }
+  },
+  "description": "Self-hosted email open/click tracking on Cloudflare Workers, with an MCP server so AI agents can query engagement.",
+  "license": "MIT"
 }

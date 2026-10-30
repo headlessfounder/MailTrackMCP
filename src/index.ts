@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { DASHBOARD_HTML } from './dashboard'
 import { handleMcp } from './mcp'
+import { type EmailEnv, emailConfigured, sendEmail } from './email'
 import {
   consumeMagicLink,
   makeSession,
@@ -15,9 +16,15 @@ type Env = {
   /** Canonical host that pixel + link URLs are built on (e.g. go.duvalsoftware.com).
    *  Falls back to the request origin so the worker still works without it. */
   TRACKING_HOST?: string
-  /** Optional: set to enable "first open" email alerts via Resend. */
+  /** Cloudflare Email Sending binding. Default transport for alerts + login. */
+  EMAIL?: EmailEnv['EMAIL']
+  /** Set to route email through Resend instead of the Cloudflare binding. */
   RESEND_API_KEY?: string
+  /** Sender address, e.g. "GrokBotTrack <notify@yourdomain.com>". */
   NOTIFY_FROM?: string
+  /** Seconds after send during which a proxied open is treated as the sender
+   *  re-reading their own copy rather than a genuine recipient open. */
+  SELF_OPEN_WINDOW_SEC?: string
   /** Optional: set to enable magic-link login (signs session cookies). */
   SESSION_SECRET?: string
 }
@@ -52,17 +59,32 @@ function now(): string {
   return new Date().toISOString()
 }
 
+/** Default grace period for treating a proxied open as the sender's own echo. */
+const DEFAULT_SELF_OPEN_WINDOW_SEC = 90
+
+function selfOpenWindow(env: Env): number {
+  const n = Number(env.SELF_OPEN_WINDOW_SEC)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SELF_OPEN_WINDOW_SEC
+}
+
 // Classify a tracking event so proxies, prefetchers, and security scanners
 // don't inflate the stats. Geo is only trustworthy for 'human' events.
 function classify(
   ua: string,
   cf: IncomingRequestCfProperties | undefined,
   sentAt: string,
-  type: 'open' | 'click'
+  type: 'open' | 'click',
+  selfOpenWindowSec = DEFAULT_SELF_OPEN_WINDOW_SEC
 ): string {
   const ageSec = (Date.now() - Date.parse(sentAt)) / 1000
   const org = (cf?.asOrganization || '').toLowerCase()
-  if (/googleimageproxy/i.test(ua)) return 'gmail-proxy'
+  if (/googleimageproxy/i.test(ua)) {
+    // Opening your own copy in Sent goes through the same Gmail image proxy as
+    // the recipient's open, so the two are indistinguishable by request alone.
+    // A genuine open this soon after send is rare; a sender re-reading theirs
+    // is not, so attribute it to the sender rather than inflating open counts.
+    return type === 'open' && ageSec < selfOpenWindowSec ? 'sender-echo' : 'gmail-proxy'
+  }
   if (org.includes('apple') || org.includes('icloud')) {
     return ageSec < 300 ? 'apple-prefetch' : 'apple-proxy'
   }
@@ -90,7 +112,7 @@ async function logEvent(
   const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf
   const ua = c.req.header('user-agent') || ''
   const ip = c.req.header('cf-connecting-ip') || ''
-  const classification = classify(ua, cf, sentAt, type)
+  const classification = classify(ua, cf, sentAt, type, selfOpenWindow(c.env))
   await c.env.DB.prepare(
     `INSERT INTO events (message_id, link_id, type, ts, ua, ip, country, region, city, timezone, classification)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -143,7 +165,7 @@ async function notifyFirstEngagement(
   type: 'open' | 'click',
   classification: string
 ) {
-  if (!env.RESEND_API_KEY) return
+  if (!emailConfigured(env)) return
   const row = await env.DB.prepare(
     `SELECT m.recipient, m.subject, m.campaign, u.email AS user_email, u.name AS user_name
      FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?`
@@ -159,37 +181,20 @@ async function notifyFirstEngagement(
   if (!row) return
 
   const verb = type === 'click' ? 'clicked a link in' : 'opened'
-  const subject = `${row.recipient} ${verb} "${row.subject || '(no subject)'}"`
   const geoNote =
-    classification === 'gmail-proxy' ? ' (via Gmail proxy — no location available)' : ''
+    classification === 'gmail-proxy' ? ' (via Gmail proxy \u2014 no location available)' : ''
 
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: env.NOTIFY_FROM || 'DuvalTrack <notify@notify.duvalsoftware.com>',
-        to: [row.user_email],
-        subject: `🔔 ${subject}`,
-        html:
-          `<p><strong>${escapeHtml(row.recipient)}</strong> just ${verb} ` +
-          `<strong>${escapeHtml(row.subject || '(no subject)')}</strong>${geoNote}.</p>` +
-          (row.campaign ? `<p>Campaign: ${escapeHtml(row.campaign)}</p>` : '') +
-          `<p style="color:#666;font-size:13px">First engagement on this message. ` +
-          `See the full timeline in your DuvalTrack dashboard.</p>`,
-      }),
-    })
-    // Surface delivery problems in logs; a bad key or unverified sender would
-    // otherwise fail invisibly.
-    if (!res.ok) console.error('resend notify failed', res.status, await res.text())
-  } catch (err) {
-    console.error('resend notify threw', String(err))
-  }
-  // Notification problems must never break tracking — that's why this is
-  // wrapped and fired via waitUntil.
+  // Failures are logged inside sendEmail; tracking must never depend on this.
+  await sendEmail(env, {
+    to: row.user_email,
+    subject: `\u{1F514} ${row.recipient} ${verb} "${row.subject || '(no subject)'}"`,
+    html:
+      `<p><strong>${escapeHtml(row.recipient)}</strong> just ${verb} ` +
+      `<strong>${escapeHtml(row.subject || '(no subject)')}</strong>${geoNote}.</p>` +
+      (row.campaign ? `<p>Campaign: ${escapeHtml(row.campaign)}</p>` : '') +
+      `<p style="color:#666;font-size:13px">First engagement on this message. ` +
+      `See the full timeline in your GrokBotTrack dashboard.</p>`,
+  })
 }
 
 const escapeHtml = (s: string) =>
@@ -197,7 +202,7 @@ const escapeHtml = (s: string) =>
 
 // ---------- public tracking routes (no auth — hit by recipients' mail clients) ----------
 
-app.get('/', (c) => c.text('DuvalTrack — internal email tracking'))
+app.get('/', (c) => c.text('GrokBotTrack — internal email tracking'))
 
 app.get('/p/:id', async (c) => {
   const id = c.req.param('id').replace(/\.gif$/, '')
@@ -235,6 +240,73 @@ app.get('/l/:id', async (c) => {
     c.executionCtx.waitUntil(notifyFirstEngagement(c.env, link.message_id, 'click', cls))
   }
   return c.redirect(link.original_url, 302)
+})
+
+// ---------- first-run setup ----------
+
+/** True only while the instance has no users; gates the open setup page. */
+async function needsSetup(db: D1Database): Promise<boolean> {
+  const row = await db.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>()
+  return (row?.n ?? 0) === 0
+}
+
+const setupPage = (body: string) => `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>GrokBotTrack setup</title>
+<style>body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+background:#f4f4f1;color:#0b0b0b;margin:0;display:flex;min-height:100vh;align-items:center;
+justify-content:center}main{background:#fff;border:1px solid #e4e3de;border-radius:14px;
+padding:28px;max-width:460px;width:92%;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+h1{margin:0 0 4px;font-size:20px}p{color:#52514e}input{width:100%;box-sizing:border-box;
+padding:11px 13px;margin:7px 0;border:1px solid #e4e3de;border-radius:9px;font-size:14px}
+button{width:100%;padding:11px;border:0;border-radius:9px;background:#2a78d6;color:#fff;
+font-size:14px;font-weight:600;cursor:pointer}code{display:block;word-break:break-all;
+background:#f4f4f1;padding:11px;border-radius:8px;font-size:13px;margin:8px 0}
+a{color:#2a78d6}</style></head><body><main>${body}</main></body></html>`
+
+app.get('/setup', async (c) => {
+  if (!(await needsSetup(c.env.DB))) {
+    return c.html(
+      setupPage(
+        `<h1>Already set up</h1><p>This instance has an account. ` +
+          `<a href="/app">Go to the dashboard</a>.</p>`
+      ),
+      403
+    )
+  }
+  return c.html(
+    setupPage(`<h1>Welcome to GrokBotTrack</h1>
+<p>Create the first account. This page disables itself afterwards.</p>
+<form method="post" action="/setup">
+  <input name="name" placeholder="Your name" required>
+  <input name="email" type="email" placeholder="you@yourdomain.com" required>
+  <button type="submit">Create account</button>
+</form>`)
+  )
+})
+
+app.post('/setup', async (c) => {
+  if (!(await needsSetup(c.env.DB))) return c.text('Setup already completed', 403)
+  const form = await c.req.parseBody()
+  const name = String(form.name || '').trim()
+  const email = String(form.email || '').trim()
+  if (!name || !email) return c.text('name and email required', 400)
+
+  const user = { id: shortId(10), name, email, api_token: 'dt_' + shortId(28) }
+  await c.env.DB.prepare(
+    'INSERT INTO users (id, name, email, api_token, created_at) VALUES (?, ?, ?, ?, ?)'
+  )
+    .bind(user.id, user.name, user.email, user.api_token, now())
+    .run()
+
+  const origin = new URL(c.req.url).origin
+  return c.html(
+    setupPage(`<h1>You're set up</h1>
+<p>This is your API token \u2014 copy it now, it's how agents and scripts authenticate.</p>
+<code>${escapeHtml(user.api_token)}</code>
+<p><a href="${origin}/app?token=${encodeURIComponent(user.api_token)}">Open your dashboard \u2192</a></p>
+<p style="font-size:13px">Configure an email provider to enable magic-link sign-in
+and engagement alerts. See the README.</p>`)
+  )
 })
 
 // ---------- admin ----------
@@ -285,7 +357,7 @@ app.use('/api/*', async (c, next) => {
 // ---------- magic-link login ----------
 
 app.post('/api/auth/request', async (c) => {
-  if (!c.env.SESSION_SECRET || !c.env.RESEND_API_KEY) {
+  if (!c.env.SESSION_SECRET || !emailConfigured(c.env)) {
     return c.json({ error: 'magic-link login not configured' }, 503)
   }
   const { email } = await c.req.json<{ email?: string }>()
@@ -338,9 +410,13 @@ async function registerMessage(
   )
 
   const pixelTag = `<img src="${origin}/p/${messageId}.gif" width="1" height="1" alt="" style="display:none">`
-  const finalHtml = /<\/body>/i.test(trackedHtml)
-    ? trackedHtml.replace(/<\/body>/i, `${pixelTag}</body>`)
-    : trackedHtml + pixelTag
+  // Injected at the TOP of the body: Gmail clips messages over ~102KB and a
+  // pixel past the clip point never renders, silently losing open tracking.
+  const bodyOpen = /<body[^>]*>/i.exec(trackedHtml)
+  const cut = bodyOpen ? bodyOpen.index + bodyOpen[0].length : 0
+  const finalHtml = bodyOpen
+    ? trackedHtml.slice(0, cut) + pixelTag + trackedHtml.slice(cut)
+    : pixelTag + trackedHtml
 
   const stmts = [
     db.prepare(

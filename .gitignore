@@ -4,3 +4,6 @@ node_modules/
 *.log
 .DS_Store
 dist/
+
+# Local deployment config (contains account-specific ids)
+wrangler.local.jsonc

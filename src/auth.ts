@@ -2,11 +2,11 @@
 // signed session cookie. Personal dt_ API tokens still work for agents/scripts;
 // this is only for humans opening the dashboard.
 
-export type AuthEnv = {
+import { type EmailEnv, emailConfigured, sendEmail } from './email'
+
+export type AuthEnv = EmailEnv & {
   DB: D1Database
   SESSION_SECRET?: string
-  RESEND_API_KEY?: string
-  NOTIFY_FROM?: string
 }
 
 const SESSION_DAYS = 30
@@ -69,7 +69,7 @@ export async function requestMagicLink(
   const user = await env.DB.prepare('SELECT id, email FROM users WHERE lower(email) = lower(?)')
     .bind(email.trim())
     .first<{ id: string; email: string }>()
-  if (!user || !env.RESEND_API_KEY) return { ok: true, sent: false }
+  if (!user || !emailConfigured(env)) return { ok: true, sent: false }
 
   const token = randToken()
   const expiresAt = new Date(Date.now() + LINK_TTL_MIN * 60_000).toISOString()
@@ -80,26 +80,18 @@ export async function requestMagicLink(
     .run()
 
   const link = `${origin}/auth/verify?t=${encodeURIComponent(token)}`
-  await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: env.NOTIFY_FROM || 'DuvalTrack <notify@notify.duvalsoftware.com>',
-      to: [user.email],
-      subject: 'Your DuvalTrack sign-in link',
-      html:
-        `<p>Click to open your DuvalTrack dashboard:</p>` +
-        `<p><a href="${link}" style="display:inline-block;padding:10px 18px;` +
-        `background:#2a78d6;color:#fff;border-radius:8px;text-decoration:none;` +
-        `font-family:sans-serif">Open dashboard</a></p>` +
-        `<p style="color:#666;font-size:13px">This link expires in ${LINK_TTL_MIN} minutes ` +
-        `and can only be used once. If you didn't request it, you can ignore this email.</p>`,
-    }),
+  const res = await sendEmail(env, {
+    to: user.email,
+    subject: 'Your GrokBotTrack sign-in link',
+    html:
+      `<p>Click to open your GrokBotTrack dashboard:</p>` +
+      `<p><a href="${link}" style="display:inline-block;padding:10px 18px;` +
+      `background:#2a78d6;color:#fff;border-radius:8px;text-decoration:none;` +
+      `font-family:sans-serif">Open dashboard</a></p>` +
+      `<p style="color:#666;font-size:13px">This link expires in ${LINK_TTL_MIN} minutes ` +
+      `and can only be used once. If you didn't request it, you can ignore this email.</p>`,
   })
-  return { ok: true, sent: true }
+  return { ok: true, sent: res.sent }
 }
 
 /** Burns the token and returns the user id, or null if invalid/expired/used. */

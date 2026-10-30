@@ -3,7 +3,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DuvalTrack</title>
+<title>GrokBotTrack</title>
 <style>
 :root{
   --surface-0:#f4f4f1; --surface-1:#fcfcfb; --border:#e4e3de;
@@ -87,7 +87,7 @@ function gate(msg){
   const err=new URLSearchParams(location.search).get('err');
   const note=err==='expired'?'That link expired or was already used. Request a new one.':
              err==='invalid'?'That link was not valid. Request a new one.':(msg||'');
-  $('#root').innerHTML='<div class="gate"><h1>DuvalTrack</h1>'+
+  $('#root').innerHTML='<div class="gate"><h1>GrokBotTrack</h1>'+
     (note?'<p class="muted">'+esc(note)+'</p>':'<p class="muted">Sign in to see your tracked emails</p>')+
     '<input id="email" type="email" placeholder="you@duvalsoftware.com" autofocus>'+
     '<button onclick="sendLink()">Email me a sign-in link</button>'+
@@ -128,7 +128,7 @@ async function load(){
   const tClicks=msgs.reduce((s,m)=>s+(m.clicks||0),0);
   const openedCount=groups.filter(g=>g.opens>0).length;
   $('#root').innerHTML=
-    '<header><h1>DuvalTrack</h1><span class="who">'+esc(data.user.name)+'</span></header><main>'+
+    '<header><h1>GrokBotTrack</h1><span class="who">'+esc(data.user.name)+'</span></header><main>'+
     '<div class="tiles">'+
       tile(msgs.length,'Emails sent')+tile(groups.length,'Recipients')+
       tile(openedCount,'Opened by')+tile(tOpens,'Confirmed opens')+tile(tClicks,'Clicks')+

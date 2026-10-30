@@ -1,13 +1,13 @@
-# Wiring your agent stack to DuvalTrack
+# Wiring your agent stack to GrokBotTrack
 
-DuvalTrack tracks opens and clicks on outbound email. The rule for any agent that
+GrokBotTrack tracks opens and clicks on outbound email. The rule for any agent that
 sends mail: **register the email first, then send the HTML that register returns.**
 
 Two ways to call it.
 
 ## Option A — MCP (for Claude agents / sessions)
 
-The server is registered user-scope as `duvaltrack` and exposes four tools:
+The server is registered user-scope as `grokbottrack` and exposes four tools:
 
 - `register_tracked_email(recipient, html, subject?, campaign?, agent_source?)`
   → returns `message_id` + `tracked_html`. **Send `tracked_html` verbatim** — it has
@@ -28,7 +28,7 @@ Typical agent flow:
 Each user has a personal token (`dt_...`). Send it as `Authorization: Bearer <token>`.
 
 ```
-POST https://duvaltrack.duvalsoftware.workers.dev/api/register
+POST https://grokbottrack.duvalsoftware.workers.dev/api/register
 Authorization: Bearer dt_xxx
 Content-Type: application/json
 
@@ -54,4 +54,4 @@ Read endpoints (same Bearer token):
 - **Geo:** reliable on clicks and on opens from direct-fetch clients; Gmail/Apple
   proxy the pixel so those opens have no real location (dashboard hides it).
 - **Resend already has native open/click tracking** — the reason to route Resend
-  sends through DuvalTrack anyway is one unified dashboard across every sender.
+  sends through GrokBotTrack anyway is one unified dashboard across every sender.
