@@ -21,6 +21,7 @@ type Ctx = {
     }
   ) => Promise<{ message_id: string; pixel_url: string; links: unknown[]; html: string }>
   messageSummary: (db: D1Database, userId: string, limit?: number) => Promise<unknown[]>
+  comparisonReport: (db: D1Database, userId: string, days?: number) => Promise<unknown>
 }
 
 const SERVER_INFO = { name: 'mailtrackmcp', version: '1.0.0' }
@@ -59,6 +60,17 @@ const TOOLS = [
       type: 'object',
       required: ['message_id'],
       properties: { message_id: { type: 'string' } },
+    },
+  },
+  {
+    name: 'get_filtering_comparison',
+    description:
+      'Compare what this tracker reports against counting every pixel hit, on the same messages. Shows how many opens and how many recipients a naive tracker would over-report, broken down by which rule suppressed each event. Use when asked how much bot/prefetch filtering actually changes the numbers.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        days: { type: 'number', description: 'Limit to the last N days (default: all time)' },
+      },
     },
   },
   {
@@ -121,6 +133,10 @@ async function callTool(ctx: Ctx, name: string, args: Record<string, unknown>) {
         .all()
       return toolResult({ message: msg, events: results })
     }
+    case 'get_filtering_comparison': {
+      const days = typeof args.days === 'number' ? args.days : undefined
+      return toolResult(await ctx.comparisonReport(ctx.db, ctx.user.id, days))
+    }
     case 'get_campaign_stats': {
       const { results } = await ctx.db
         .prepare(
@@ -146,7 +162,9 @@ async function callTool(ctx: Ctx, name: string, args: Record<string, unknown>) {
 export async function handleMcp(
   req: Request,
   db: D1Database,
-  deps: Pick<Ctx, 'registerMessage' | 'messageSummary'> & { trackingOrigin?: string }
+  deps: Pick<Ctx, 'registerMessage' | 'messageSummary' | 'comparisonReport'> & {
+    trackingOrigin?: string
+  }
 ): Promise<Response> {
   const token = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
   if (!token) return json(err(null, -32001, 'missing bearer token'), 401)

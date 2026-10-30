@@ -257,6 +257,53 @@ curl -X POST https://<your-worker>/api/webhook/test -H "Authorization: Bearer dt
 Full details, including signature-verification code, are in
 [AGENTS.md](AGENTS.md).
 
+## Measuring what filtering actually changes
+
+Claims about bot filtering are easy to make and hard to check, so the tool
+reports its own effect:
+
+```bash
+curl https://<your-worker>/api/comparison?days=30 -H "Authorization: Bearer dt_YOUR_TOKEN"
+```
+
+```json
+{
+  "messages_sent": 29,
+  "opens": { "naive": 36, "confirmed": 32, "suppressed": 4, "inflation_pct": 12.5 },
+  "recipients_reported_as_having_opened": { "naive": 17, "confirmed": 16, "falsely_counted": 1 },
+  "breakdown": [ { "type": "open", "classification": "sender-echo", "events": 4, "recipients": 2 } ],
+  "caveat": "Only 36 open events in this window — treat as directional, not a result."
+}
+```
+
+Both columns come from **the same events on the same messages**, so it is a
+like-for-like comparison rather than an estimate. `inflation_pct` is how much
+higher a naive count would read. The recipient figure is usually the one that
+matters: how many people you would believe had read your email, who had not.
+A sample-size caveat is attached automatically below 100 events.
+
+Agents can pull the same report via the `get_filtering_comparison` MCP tool.
+
+### Comparing against another tracker
+
+To measure this against a tracker you already pay for, run both on the same
+sends. Link rewriting only touches `<a href>`, so **another tracker's pixel
+passes through untouched** — put it in the HTML you hand to `/api/register`:
+
+```json
+{
+  "recipient": "them@company.com",
+  "subject": "...",
+  "html": "<html><body><p>Hi…</p><img src=\"https://other-tracker.example/open/ABC.gif\" width=\"1\" height=\"1\"></body></html>"
+}
+```
+
+Both pixels ship in one message to one recipient, so any difference in reported
+opens is down to counting rules, not different audiences. Compare their number
+against `confirmed` and `naive` here. Send to a real, varied recipient list —
+Apple Mail and corporate inboxes are what exercise the prefetch and scanner
+rules at all.
+
 ## Trust model
 
 Not every pixel fetch is a human reading your email.
@@ -294,6 +341,7 @@ rather than inflating your numbers. Tune with `SELF_OPEN_WINDOW_SEC`.
 | `GET /api/webhook` | Bearer / session | Read your webhook settings |
 | `PUT /api/webhook` | Bearer / session | Set webhook URL + signing secret |
 | `POST /api/webhook/test` | Bearer / session | Send a sample payload to your receiver |
+| `GET /api/comparison` | Bearer / session | Filtered vs naive open counts on the same messages |
 | `GET /app` | session or token | Dashboard |
 | `GET /setup` | first run only | Create the first account |
 | `POST /api/admin/users` | `x-admin-token` | Add further users |

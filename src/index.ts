@@ -680,6 +680,95 @@ app.get('/api/messages/:id/events', async (c) => {
   return c.json({ events: results })
 })
 
+// ---------- filtering comparison ----------
+
+/**
+ * Quantifies what classification changes versus counting every pixel hit.
+ * Both columns come from the same events on the same messages, so this is a
+ * like-for-like comparison rather than an estimate.
+ */
+async function comparisonReport(db: D1Database, userId: string, days?: number) {
+  const since = days
+    ? new Date(Date.now() - days * 86400_000).toISOString()
+    : '1970-01-01T00:00:00.000Z'
+
+  const totals = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM messages WHERE user_id = ? AND sent_at >= ?) AS messages_sent,
+         SUM(CASE WHEN e.type='open' THEN 1 ELSE 0 END) AS naive_opens,
+         SUM(CASE WHEN e.type='open' AND e.classification IN ('human','gmail-proxy') THEN 1 ELSE 0 END) AS confirmed_opens,
+         SUM(CASE WHEN e.type='click' THEN 1 ELSE 0 END) AS naive_clicks,
+         SUM(CASE WHEN e.type='click' AND e.classification='human' THEN 1 ELSE 0 END) AS confirmed_clicks
+       FROM events e JOIN messages m ON m.id = e.message_id
+       WHERE m.user_id = ? AND m.sent_at >= ?`
+    )
+    .bind(userId, since, userId, since)
+    .first<Record<string, number>>()
+
+  // Recipient-level is the figure that actually misleads: how many people a
+  // naive tracker would report as having read the email, who did not.
+  const people = await db
+    .prepare(
+      `SELECT
+         COUNT(DISTINCT CASE WHEN e.type='open' THEN m.recipient END) AS naive_recipients_opened,
+         COUNT(DISTINCT CASE WHEN e.type='open' AND e.classification IN ('human','gmail-proxy') THEN m.recipient END) AS confirmed_recipients_opened
+       FROM events e JOIN messages m ON m.id = e.message_id
+       WHERE m.user_id = ? AND m.sent_at >= ?`
+    )
+    .bind(userId, since)
+    .first<Record<string, number>>()
+
+  const { results: breakdown } = await db
+    .prepare(
+      `SELECT e.type, e.classification, COUNT(*) AS events,
+              COUNT(DISTINCT m.recipient) AS recipients
+       FROM events e JOIN messages m ON m.id = e.message_id
+       WHERE m.user_id = ? AND m.sent_at >= ?
+       GROUP BY e.type, e.classification ORDER BY e.type, events DESC`
+    )
+    .bind(userId, since)
+    .all()
+
+  const n = (v: unknown) => Number(v ?? 0)
+  const pct = (a: number, b: number) => (b ? Number(((a / b) * 100).toFixed(1)) : null)
+  const naiveO = n(totals?.naive_opens)
+  const confO = n(totals?.confirmed_opens)
+  const naiveP = n(people?.naive_recipients_opened)
+  const confP = n(people?.confirmed_recipients_opened)
+
+  return {
+    window_days: days ?? 'all time',
+    messages_sent: n(totals?.messages_sent),
+    opens: {
+      naive: naiveO,
+      confirmed: confO,
+      suppressed: naiveO - confO,
+      inflation_pct: pct(naiveO - confO, confO),
+    },
+    clicks: {
+      naive: n(totals?.naive_clicks),
+      confirmed: n(totals?.confirmed_clicks),
+      suppressed: n(totals?.naive_clicks) - n(totals?.confirmed_clicks),
+    },
+    recipients_reported_as_having_opened: {
+      naive: naiveP,
+      confirmed: confP,
+      falsely_counted: naiveP - confP,
+    },
+    breakdown,
+    caveat:
+      naiveO < 100
+        ? `Only ${naiveO} open events in this window — treat as directional, not a result.`
+        : null,
+  }
+}
+
+app.get('/api/comparison', async (c) => {
+  const days = c.req.query('days') ? Number(c.req.query('days')) : undefined
+  return c.json(await comparisonReport(c.env.DB, c.get('user').id, days))
+})
+
 // ---------- webhook configuration ----------
 
 app.get('/api/webhook', async (c) => {
@@ -753,6 +842,7 @@ app.post('/mcp', (c) =>
   handleMcp(c.req.raw, c.env.DB, {
     registerMessage,
     messageSummary,
+    comparisonReport,
     trackingOrigin: trackingOrigin(c.env, c.req.url),
   })
 )
