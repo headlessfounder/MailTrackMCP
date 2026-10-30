@@ -61,6 +61,25 @@ tr:last-child td{border-bottom:none}
   font-size:14px;font-weight:600;cursor:pointer}
 .muted{color:var(--text-muted)}.empty{padding:40px;text-align:center;color:var(--text-muted)}
 .linkurl{color:var(--text-secondary);word-break:break-all}
+.keys{margin-top:36px}
+.keys h2{font-size:15px;font-weight:650;margin:0 0 4px}
+.keys p.lead{color:var(--text-secondary);font-size:13px;margin:0 0 14px}
+.keyform{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:14px 16px;
+  box-shadow:var(--shadow);display:grid;gap:10px;margin-bottom:14px}
+.keyform .row{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.keyform input[type=text],.keyform input[type=number]{padding:8px 10px;border:1px solid var(--border);
+  border-radius:8px;background:var(--surface-0);color:var(--text-primary);font-size:13px}
+.keyform label{font-size:13px;display:flex;gap:6px;align-items:center}
+.keyform label small{color:var(--text-muted)}
+.keyform button{padding:8px 14px;border:none;border-radius:8px;background:var(--blue);color:#fff;
+  font-size:13px;font-weight:600;cursor:pointer;justify-self:start}
+.newkey{background:color-mix(in srgb,var(--aqua) 10%,transparent);border:1px solid color-mix(in srgb,var(--aqua) 40%,transparent);
+  border-radius:10px;padding:12px 14px;font-size:13px;margin-bottom:14px}
+.newkey code{display:block;word-break:break-all;margin-top:6px;font-size:13px;user-select:all}
+.revoke{background:none;border:1px solid var(--border);color:var(--red);border-radius:7px;padding:3px 9px;
+  font-size:12px;cursor:pointer}
+.revoked td{color:var(--text-muted);text-decoration:line-through}
+.scope{font-size:11px;padding:1px 6px;border-radius:5px;background:color-mix(in srgb,var(--violet) 14%,transparent);color:var(--violet);margin-right:3px}
 </style>
 </head>
 <body>
@@ -77,9 +96,11 @@ const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"
 
 // Session cookie (set by a magic link) is sent automatically; the Bearer header
 // is only added when someone pasted a personal dt_ token.
-async function api(path){
+async function api(path,opts){
   const h=token?{Authorization:'Bearer '+token}:{};
-  const r=await fetch(path,{headers:h,credentials:'same-origin'});
+  const init={headers:h,credentials:'same-origin'};
+  if(opts){init.method=opts.method||'GET';if(opts.body){h['Content-Type']='application/json';init.body=JSON.stringify(opts.body);}}
+  const r=await fetch(path,init);
   if(!r.ok)throw new Error(r.status);return r.json();
 }
 
@@ -135,8 +156,53 @@ async function load(){
     '</div>'+
     (groups.length?'<table><thead><tr><th>Recipient</th><th>Opens</th><th>Clicks</th><th>Last activity</th></tr></thead><tbody>'+
       groups.map(rowGroup).join('')+'</tbody></table>':'<div class="empty">No tracked emails yet. Register one via the API and it will appear here.</div>')+
+    '<section class="keys" id="keys"></section>'+
     '</main>';
+  loadKeys();
 }
+
+// ---- agent keys (owner only; agent keys themselves get a 403 here and see nothing) ----
+const SCOPE_HELP={register:'inject pixel + rewrite links on outbound mail',
+  read:'see every recipient and who opened/clicked — only for agents that report to you',
+  webhook:'change where engagement events are delivered — agents almost never need this'};
+async function loadKeys(){
+  const box=$('#keys');if(!box)return;
+  let keys;
+  try{({keys}=await api('/api/keys'));}catch(e){box.innerHTML='';return;}
+  box.innerHTML='<h2>Agent keys</h2>'+
+    '<p class="lead">Give agents an <code>mk_</code> key with only the scopes they need instead of your personal token. '+
+    'A prompt-injected agent can only do what its key allows, and you can revoke one key without touching the others.</p>'+
+    '<div id="newkey"></div>'+
+    '<form class="keyform" onsubmit="return mint(event)">'+
+      '<div class="row"><input type="text" id="k-label" placeholder="Label, e.g. outreach agent" style="flex:1;min-width:180px">'+
+      '<input type="number" id="k-limit" min="1" placeholder="Daily send cap (optional)" style="width:200px"></div>'+
+      '<div class="row">'+['register','read','webhook'].map(sc=>'<label><input type="checkbox" name="scope" value="'+sc+'"'+(sc==='register'?' checked':'')+'> '+sc+' <small>— '+SCOPE_HELP[sc]+'</small></label>').join('')+'</div>'+
+      '<button>Create key</button></form>'+
+    (keys.length?'<table><thead><tr><th>Label</th><th>Scopes</th><th>Daily cap</th><th>Last used</th><th>Created</th><th></th></tr></thead><tbody>'+
+      keys.map(k=>'<tr class="'+(k.revoked_at?'revoked':'')+'"><td>'+esc(k.label||k.id)+'</td>'+
+        '<td>'+k.scopes.split(',').map(x=>'<span class="scope">'+esc(x)+'</span>').join('')+'</td>'+
+        '<td>'+(k.daily_register_limit??'—')+'</td><td class="when">'+(k.last_used_at?fmt(k.last_used_at):'never')+'</td>'+
+        '<td class="when">'+fmt(k.created_at)+'</td>'+
+        '<td>'+(k.revoked_at?'<span class="muted" style="font-size:12px">revoked</span>':'<button class="revoke" onclick="revoke(\''+k.id+'\')">Revoke</button>')+'</td></tr>').join('')+
+      '</tbody></table>':'<p class="muted" style="font-size:13px">No agent keys yet.</p>');
+}
+window.mint=async(ev)=>{
+  ev.preventDefault();
+  const scopes=[...document.querySelectorAll('input[name=scope]:checked')].map(i=>i.value);
+  if(!scopes.length){alert('Pick at least one scope.');return false;}
+  const lim=$('#k-limit').value?Number($('#k-limit').value):null;
+  try{
+    const r=await api('/api/keys',{method:'POST',body:{label:$('#k-label').value.trim()||null,scopes,daily_register_limit:lim}});
+    await loadKeys();
+    $('#newkey').innerHTML='<div class="newkey"><strong>Copy this key now — it will not be shown again.</strong>'+
+      '<code>'+esc(r.key)+'</code><div class="muted" style="margin-top:6px">Use it as <code>Authorization: Bearer '+esc(r.key.slice(0,6))+'…</code> in your agent\'s MCP config.</div></div>';
+  }catch(e){alert('Could not create key ('+e.message+').');}
+  return false;
+};
+window.revoke=async(id)=>{
+  if(!confirm('Revoke this key? Any agent using it stops working immediately.'))return;
+  try{await api('/api/keys/'+id,{method:'DELETE'});await loadKeys();}catch(e){alert('Could not revoke ('+e.message+').');}
+};
 const tile=(n,l)=>'<div class="tile"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>';
 function pill(n,cls){return '<span class="pill '+(n?cls:'zero')+'">'+n+'</span>';}
 

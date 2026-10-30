@@ -44,10 +44,13 @@ extension.
 - **Geolocation** from Cloudflare's edge, surfaced only when it's genuinely the
   reader's
 - **Multi-user** — personal API tokens, isolated data per person
+- **Scoped agent keys** — agents get `mk_` keys limited to `register`, `read`
+  and/or `webhook`, with optional daily caps and per-key revocation, so a
+  prompt-injected agent can only do what its key allows
 - **Dashboard** — per-recipient rollups with expandable event timelines
 - **Passwordless login** — magic link, no passwords stored
 - **Engagement alerts** — email on a recipient's first genuine open or click
-- **MCP server** — four tools, JSON-RPC 2.0 over HTTP POST, served by the Worker itself
+- **MCP server** — five tools, JSON-RPC 2.0 over HTTP POST, served by the Worker itself
 - **Webhooks** — every genuine open or click POSTed to your endpoint in real time
 
 ## Quick start
@@ -121,7 +124,7 @@ images won't register opens — clicks still will.
 
 ```bash
 curl -X POST https://<your-worker>/api/register \
-  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "Authorization: Bearer mk_YOUR_AGENT_KEY" \
   -H "content-type: application/json" \
   -d '{
     "recipient": "them@company.com",
@@ -137,7 +140,31 @@ comparable across every tool you send from.
 
 ### Connect an agent (MCP)
 
-Point any MCP-capable agent at `/mcp`:
+**First, mint a key for the agent** — not your personal `dt_` token. Your
+token can do everything you can; an agent key carries only the scopes you give
+it, so a prompt injection that reaches the agent is boxed in by the key. Create
+one from the dashboard's *Agent keys* panel, or:
+
+```bash
+curl -X POST https://<your-worker>/api/keys \
+  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"label":"outreach agent","scopes":["register","read"],"daily_register_limit":200}'
+# → { "key": "mk_...", ... }   shown once; store it
+```
+
+| Scope | Lets the key… | Give it to |
+|---|---|---|
+| `register` | inject the pixel and rewrite links on outbound mail | agents that send |
+| `read` | see every recipient and who opened/clicked | agents that report to you |
+| `webhook` | change where engagement events are delivered | almost never an agent |
+
+The tightest setup is two keys: a `register`-only key with a daily cap for the
+agent that sends, and a `read`-only key for the agent that answers "who opened
+my email?". Neither can reach your contact list *and* an outbound channel at
+once. Revoke any key from the dashboard without touching the others.
+
+Then point the agent at `/mcp`:
 
 ```json
 {
@@ -145,7 +172,7 @@ Point any MCP-capable agent at `/mcp`:
     "mailtrackmcp": {
       "type": "http",
       "url": "https://<your-worker>/mcp",
-      "headers": { "Authorization": "Bearer dt_YOUR_TOKEN" }
+      "headers": { "Authorization": "Bearer mk_YOUR_AGENT_KEY" }
     }
   }
 }
@@ -160,27 +187,29 @@ Client can only launch stdio servers? Bridge it:
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://<your-worker>/mcp",
                "--transport", "http",
-               "--header", "Authorization: Bearer dt_YOUR_TOKEN"]
+               "--header", "Authorization: Bearer mk_YOUR_AGENT_KEY"]
     }
   }
 }
 ```
 
-Verify the connection — this should list four tools:
+Verify the connection — the key sees only the tools its scopes allow, so a
+`register`-only key lists one tool and a `read`-only key lists four:
 
 ```bash
 curl -s -X POST https://<your-worker>/mcp \
-  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "Authorization: Bearer mk_YOUR_AGENT_KEY" \
   -H "content-type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-| Tool | Arguments | Returns |
-|---|---|---|
-| `register_tracked_email` | `recipient`, `html`, `subject?`, `campaign?`, `agent_source?` | `message_id` + `tracked_html` to send verbatim |
-| `list_recent_emails` | `limit?` | Sends with `confirmed_opens`, `raw_opens`, `clicks`, `last_human_activity` |
-| `get_email_status` | `message_id` | Event timeline: type, time, location, classification |
-| `get_campaign_stats` | — | Per-campaign emails, recipients, opens, clicks |
+| Tool | Scope | Arguments | Returns |
+|---|---|---|---|
+| `register_tracked_email` | `register` | `recipient`, `html`, `subject?`, `campaign?`, `agent_source?` | `message_id` + `tracked_html` to send verbatim |
+| `list_recent_emails` | `read` | `limit?` | Sends with `confirmed_opens`, `raw_opens`, `clicks`, `last_human_activity` |
+| `get_email_status` | `read` | `message_id` | Event timeline: type, time, location, classification |
+| `get_campaign_stats` | `read` | — | Per-campaign emails, recipients, opens, clicks |
+| `get_filtering_comparison` | `read` | `days?` | Filtered vs naive opens on the same messages |
 
 Then just ask your agent:
 
@@ -332,16 +361,19 @@ rather than inflating your numbers. Tune with `SELF_OPEN_WINDOW_SEC`.
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `POST /api/register` | Bearer | Inject pixel + rewrite links, return tracked HTML |
+| `POST /api/register` | Bearer (`register`) | Inject pixel + rewrite links, return tracked HTML; 429 once a key's daily cap is hit |
 | `GET /p/:id.gif` | none | Log open, return 1×1 GIF |
 | `GET /l/:id` | none | Log click, 302 to the stored destination |
-| `GET /api/summary` | Bearer / session | Per-message rollup |
-| `GET /api/messages/:id/events` | Bearer / session | Event timeline |
-| `POST /mcp` | Bearer | MCP server (JSON-RPC 2.0) |
-| `GET /api/webhook` | Bearer / session | Read your webhook settings |
-| `PUT /api/webhook` | Bearer / session | Set webhook URL + signing secret |
-| `POST /api/webhook/test` | Bearer / session | Send a sample payload to your receiver |
-| `GET /api/comparison` | Bearer / session | Filtered vs naive open counts on the same messages |
+| `GET /api/summary` | Bearer (`read`) / session | Per-message rollup |
+| `GET /api/messages/:id/events` | Bearer (`read`) / session | Event timeline |
+| `POST /mcp` | Bearer | MCP server (JSON-RPC 2.0); tools filtered by the key's scopes |
+| `GET /api/webhook` | Bearer (`webhook`) / session | Read your webhook settings |
+| `PUT /api/webhook` | Bearer (`webhook`) / session | Set webhook URL + signing secret |
+| `POST /api/webhook/test` | Bearer (`webhook`) / session | Send a sample payload to your receiver |
+| `GET /api/comparison` | Bearer (`read`) / session | Filtered vs naive open counts on the same messages |
+| `GET /api/keys` | owner token / session | List your agent keys (never the keys themselves) |
+| `POST /api/keys` | owner token / session | Mint an agent key: `label`, `scopes[]`, `daily_register_limit?` |
+| `DELETE /api/keys/:id` | owner token / session | Revoke an agent key |
 | `GET /app` | session or token | Dashboard |
 | `GET /setup` | first run only | Create the first account |
 | `POST /api/admin/users` | `x-admin-token` | Add further users |
@@ -367,7 +399,9 @@ flowchart TD
 ## Data model
 
 - **users** — `id, name, email, api_token, created_at`
-- **messages** — `id, user_id, recipient, subject, campaign, agent_source, sent_at`
+- **messages** — `id, user_id, recipient, subject, campaign, agent_source, sent_at, api_key_id`
+- **api_keys** — `id, user_id, token_hash, label, scopes, daily_register_limit,
+  created_at, last_used_at, revoked_at` *(only the SHA-256 of a key is stored)*
 - **links** — `id, message_id, original_url` *(destinations stored server-side;
   the redirect never trusts a URL from the query string)*
 - **events** — `id, message_id, link_id, type, ts, ua, ip, country, region, city,
@@ -415,8 +449,10 @@ act on beat inflated ones that flatter you.
 ## Security
 
 Set `ADMIN_TOKEN` before sharing your Worker URL: `/setup` is open while the
-instance has no accounts, and the token closes that window. Full notes, and what
-the system does and doesn't protect against, are in [SECURITY.md](SECURITY.md).
+instance has no accounts, and the token closes that window. Give agents scoped
+`mk_` keys, never your `dt_` token — see *Connect an agent* above. Full notes,
+including what a prompt-injected agent can and cannot do through this system,
+are in [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 

@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS messages (
   subject TEXT,
   campaign TEXT,
   agent_source TEXT,
-  sent_at TEXT NOT NULL
+  sent_at TEXT NOT NULL,
+  -- Which agent key registered this message (NULL for owner-token registers);
+  -- used to enforce a key's daily_register_limit.
+  api_key_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS links (
@@ -53,3 +56,19 @@ CREATE TABLE IF NOT EXISTS login_tokens (
   used INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_login_tokens_user ON login_tokens(user_id);
+
+-- Scoped agent keys. Agents get an mk_ key carrying only the scopes they need
+-- (register, read, webhook) instead of the owner's all-powerful dt_ token.
+-- Only the SHA-256 of the key is stored.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  token_hash TEXT NOT NULL UNIQUE,
+  label TEXT,
+  scopes TEXT NOT NULL,               -- comma-separated subset of register,read,webhook
+  daily_register_limit INTEGER,       -- NULL = uncapped
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);

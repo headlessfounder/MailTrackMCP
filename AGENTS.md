@@ -12,6 +12,40 @@ Replace `<your-worker>` below with your deployment's host (for example
 
 ---
 
+## Which credential to give an agent
+
+Two kinds of Bearer credential work everywhere below:
+
+- **`dt_` — your personal token.** Does everything you can: reads every
+  recipient, changes the webhook, mints keys. Keep it for the dashboard and
+  for minting keys. Do not paste it into an agent config.
+- **`mk_` — an agent key.** Carries only the scopes you give it, can be capped
+  per 24 hours, and can be revoked on its own. The MCP server only advertises
+  the tools the key's scopes allow, so an agent with a `register`-only key never
+  sees `list_recent_emails` at all.
+
+| Scope | Allows | Typical holder |
+|---|---|---|
+| `register` | `register_tracked_email`, `POST /api/register` | the agent that sends |
+| `read` | `list_recent_emails`, `get_email_status`, `get_campaign_stats`, `get_filtering_comparison`, read endpoints | the agent that reports |
+| `webhook` | `GET/PUT /api/webhook`, `/api/webhook/test` | you, not an agent |
+
+Mint one (or use the dashboard's *Agent keys* panel):
+
+```bash
+curl -X POST https://<your-worker>/api/keys \
+  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"label":"outreach agent","scopes":["register"],"daily_register_limit":200}'
+```
+
+Why this matters: an agent that reads inbound mail can be prompt-injected. If
+it holds a `read` key *and* has its own send tool, an injected instruction can
+walk your contact list out the door. Splitting sending (`register`, capped) and
+reporting (`read`) across two keys means no single compromised agent has both.
+
+---
+
 ## Option A — MCP (for Claude, Cursor, OpenClaw, and other MCP agents)
 
 ### Connect
@@ -22,7 +56,7 @@ Replace `<your-worker>` below with your deployment's host (for example
     "mailtrackmcp": {
       "type": "http",
       "url": "https://<your-worker>/mcp",
-      "headers": { "Authorization": "Bearer dt_YOUR_TOKEN" }
+      "headers": { "Authorization": "Bearer mk_YOUR_AGENT_KEY" }
     }
   }
 }
@@ -37,29 +71,29 @@ If your client can only launch stdio servers, bridge it:
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://<your-worker>/mcp",
                "--transport", "http",
-               "--header", "Authorization: Bearer dt_YOUR_TOKEN"]
+               "--header", "Authorization: Bearer mk_YOUR_AGENT_KEY"]
     }
   }
 }
 ```
 
-Verify before wiring it in — this should list four tools:
+Verify before wiring it in — it lists only the tools the key's scopes allow:
 
 ```bash
 curl -s -X POST https://<your-worker>/mcp \
-  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "Authorization: Bearer mk_YOUR_AGENT_KEY" \
   -H "content-type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 ### Tools
 
-| Tool | Arguments | Returns |
-|---|---|---|
-| `register_tracked_email` | `recipient`, `html`, `subject?`, `campaign?`, `agent_source?` | `message_id`, `tracked_html` (send this verbatim), `links[]` |
-| `list_recent_emails` | `limit?` (default 50) | Recent sends with `confirmed_opens`, `raw_opens`, `clicks`, `last_human_activity` |
-| `get_email_status` | `message_id` | Full event timeline: type, timestamp, location, classification |
-| `get_campaign_stats` | — | Per-campaign `emails`, `recipients`, `confirmed_opens`, `clicks` |
+| Tool | Scope | Arguments | Returns |
+|---|---|---|---|
+| `register_tracked_email` | `register` | `recipient`, `html`, `subject?`, `campaign?`, `agent_source?` | `message_id`, `tracked_html` (send this verbatim), `links[]` |
+| `list_recent_emails` | `read` | `limit?` (default 50) | Recent sends with `confirmed_opens`, `raw_opens`, `clicks`, `last_human_activity` |
+| `get_email_status` | `read` | `message_id` | Full event timeline: type, timestamp, location, classification |
+| `get_campaign_stats` | `read` | — | Per-campaign `emails`, `recipients`, `confirmed_opens`, `clicks` |
 
 ### Typical flow
 
@@ -75,7 +109,7 @@ curl -s -X POST https://<your-worker>/mcp \
 
 ```bash
 curl -X POST https://<your-worker>/api/register \
-  -H "Authorization: Bearer dt_YOUR_TOKEN" \
+  -H "Authorization: Bearer mk_YOUR_AGENT_KEY" \
   -H "content-type: application/json" \
   -d '{
     "recipient": "them@company.com",
@@ -97,7 +131,7 @@ Response — send the `html` field as the email body:
 }
 ```
 
-Read endpoints use the same Bearer token:
+Read endpoints take a key with the `read` scope:
 
 - `GET /api/summary` — per-message rollup
 - `GET /api/messages/:id/events` — event timeline for one message
@@ -176,11 +210,16 @@ you get either none or two.
    go untracked.
 6. **Gmail sending limits** — Google Workspace caps around 2,000 recipients/day
    and API sends count toward it. Route bulk sequences through a dedicated ESP.
+7. **A scope error or a 429 from `register` is a deliberate stop.** The key's
+   owner set that limit. Report it; never fall back to sending untracked or to
+   another credential.
 
 ## Getting notified in real time (webhooks)
 
 Rather than polling, have engagement pushed to you. Set a webhook on your
-account and every genuine open or click POSTs to it immediately:
+account and every genuine open or click POSTs to it immediately. This uses your
+`dt_` token (or a key with the `webhook` scope — which a sending agent should
+never hold, since it decides where every recipient's activity is delivered):
 
 ```bash
 curl -X PUT https://<your-worker>/api/webhook \

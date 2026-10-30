@@ -45,12 +45,58 @@ Secrets belong in `wrangler secret put`, never in the repo.
   otherwise anyone who learns your endpoint URL can forge events.
 - **Tracking ids are 14 random characters** from a 62-character alphabet
   (~83 bits), so message ids are not guessable or enumerable.
+- **Agent keys are scoped, capped, hashed and revocable.** `mk_` keys carry
+  only `register`, `read` and/or `webhook`; the MCP server advertises only the
+  tools a key may call; a key can be limited to N registrations per 24 hours;
+  only the SHA-256 of a key is stored; and revoking one key leaves the owner's
+  token and every other key untouched.
+
+## Threat model: a compromised or prompt-injected agent
+
+Agents that read inbound mail will eventually read an instruction written by an
+attacker. This section is explicit about what such an agent can and cannot do
+*through this system*.
+
+**What MailTrackMCP cannot do, with any credential:** send email. It holds no
+credential for your mailbox. `register_tracked_email` returns HTML; your
+agent's own mail tool sends it. The Worker's only outbound mail is engagement
+alerts and login links to the account owner's own address. If an injected agent
+mass-mails your contacts, that is the agent's send tool at work; constrain that
+tool with the same care as this one.
+
+**What an agent holding your personal `dt_` token could do** — and why that
+token should never sit in an agent config:
+
+| Action | Consequence |
+|---|---|
+| `list_recent_emails` / `GET /api/summary` | your entire recipient list and who engaged, pulled into the agent's context, from where an injection can forward it anywhere the agent can write |
+| `PUT /api/webhook` | every future engagement event — recipient, subject, time, location — delivered to an attacker's URL |
+| unlimited `register` | your tracking domain minted into an unbounded set of redirect links |
+
+**What scoped keys change.** Give the sending agent a `register`-only key with
+a daily cap and the reporting agent a `read`-only key; give no agent the
+`webhook` scope. Now:
+
+- The sending agent cannot see the contact list at all — the read tools are not
+  even listed to it — and can register at most N messages a day before `register`
+  returns an error the agent is told to treat as a hard stop.
+- The reporting agent can read engagement but, holding no send tool and no
+  `register` scope, has no channel that MailTrackMCP provides to move it.
+- Nobody but you can redirect the webhook or mint keys.
+- A leaked key is revoked on its own; the owner's token is never rotated for it.
+
+**What remains yours to manage.** A `read` key in an agent that *also* has an
+outbound channel (mail, chat, HTTP) can still leak the list — the scope limits
+what this system hands over, not what the agent does with it. The cap on
+`register` bounds abuse; it does not detect it. Put the read key only in agents
+whose output goes to you.
 
 ## Known limitations
 
 - **An authenticated user can register a link to any URL**, which makes your
   tracking domain a redirector for that user. This is inherent to click
-  tracking. Only issue tokens to people you trust.
+  tracking. Only issue tokens to people you trust, and cap agent keys with
+  `daily_register_limit`.
 - **Open tracking is best-effort.** Recipients who block remote images are not
   tracked, and that is their prerogative. Treat missing opens as missing data.
 - **Proxied opens reveal nothing about location.** The system marks these rather

@@ -10,6 +10,20 @@ import {
   requestMagicLink,
   sessionCookie,
 } from './auth'
+import {
+  type Principal,
+  type Scope,
+  type User,
+  RegisterLimitError,
+  authenticate,
+  hasScope,
+  listKeys,
+  mintKey,
+  ownerPrincipal,
+  parseScopes,
+  registrationsToday,
+  revokeKey,
+} from './keys'
 
 type Env = {
   DB: D1Database
@@ -38,22 +52,13 @@ type Env = {
   SESSION_SECRET?: string
 }
 
-type User = {
-  id: string
-  name: string
-  email: string
-  api_token: string
-  webhook_url?: string | null
-  webhook_secret?: string | null
-}
-
 /** Where tracked pixel/link URLs live. Pinning this to a custom domain keeps the
  *  embedded URLs stable regardless of which host the register call arrived on. */
 function trackingOrigin(env: Env, reqUrl: string): string {
   return env.TRACKING_HOST ? `https://${env.TRACKING_HOST}` : new URL(reqUrl).origin
 }
 
-const app = new Hono<{ Bindings: Env; Variables: { user: User } }>()
+const app = new Hono<{ Bindings: Env; Variables: { user: User; principal: Principal } }>()
 
 // 43-byte transparent 1x1 GIF
 const PIXEL = Uint8Array.from([
@@ -384,12 +389,23 @@ async function ensureSchema(db: D1Database): Promise<void> {
     db.prepare('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, sent_at)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_links_message ON links(message_id)'),
     db.prepare('CREATE INDEX IF NOT EXISTS idx_login_tokens_user ON login_tokens(user_id)'),
+    db.prepare(`CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+      token_hash TEXT NOT NULL UNIQUE, label TEXT, scopes TEXT NOT NULL,
+      daily_register_limit INTEGER, created_at TEXT NOT NULL,
+      last_used_at TEXT, revoked_at TEXT)`),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)'),
   ])
-  // Older databases predate per-user webhooks; ALTER fails harmlessly if the
+  // Older databases predate these columns; ALTER fails harmlessly if the
   // column is already there, so each one is attempted independently.
-  for (const col of ['webhook_url TEXT', 'webhook_secret TEXT']) {
+  const alters: [string, string][] = [
+    ['users', 'webhook_url TEXT'],
+    ['users', 'webhook_secret TEXT'],
+    ['messages', 'api_key_id TEXT'],
+  ]
+  for (const [table, col] of alters) {
     try {
-      await db.prepare(`ALTER TABLE users ADD COLUMN ${col}`).run()
+      await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col}`).run()
     } catch {
       /* column already exists */
     }
@@ -508,26 +524,47 @@ app.use('/api/*', async (c, next) => {
   if (c.req.path.startsWith('/api/admin/') || c.req.path.startsWith('/api/auth/')) {
     return next()
   }
-  // Agents/scripts authenticate with a personal dt_ token; humans on the
-  // dashboard authenticate with the session cookie set by a magic link.
+  // Agents authenticate with a scoped mk_ key (or the owner's dt_ token);
+  // humans on the dashboard authenticate with the session cookie set by a
+  // magic link, which carries every scope.
   const token = (c.req.header('authorization') || '').replace(/^Bearer\s+/i, '')
-  let user: User | null = null
+  let principal: Principal | null = null
   if (token) {
-    user = await c.env.DB.prepare('SELECT * FROM users WHERE api_token = ?')
-      .bind(token)
-      .first<User>()
+    principal = await authenticate(c.env.DB, token)
   } else {
     const userId = await readSession(c.env, c.req.header('cookie'))
     if (userId) {
-      user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?')
+      const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?')
         .bind(userId)
         .first<User>()
+      if (user) principal = ownerPrincipal(user)
     }
   }
-  if (!user) return c.json({ error: 'unauthorized' }, 401)
-  c.set('user', user)
+  if (!principal) return c.json({ error: 'unauthorized' }, 401)
+  c.set('principal', principal)
+  c.set('user', principal.user)
   return next()
 })
+
+/** Per-route scope gate. Owner tokens and sessions carry every scope. */
+const requireScope = (scope: Scope) =>
+  async (c: { get: (k: 'principal') => Principal; json: (b: unknown, s: 403) => Response }, next: () => Promise<void>) => {
+    if (!hasScope(c.get('principal'), scope)) {
+      return c.json({ error: `this key lacks the '${scope}' scope` }, 403)
+    }
+    await next()
+  }
+
+/** Only the owner (dt_ token or session) may manage keys — never a key itself. */
+const requireOwner = async (
+  c: { get: (k: 'principal') => Principal; json: (b: unknown, s: 403) => Response },
+  next: () => Promise<void>
+) => {
+  if (c.get('principal').keyId !== null) {
+    return c.json({ error: 'agent keys cannot manage keys; use your personal token' }, 403)
+  }
+  await next()
+}
 
 // ---------- magic-link login ----------
 
@@ -565,12 +602,18 @@ type RegisterBody = {
 }
 
 // Rewrites links, injects pixel, persists message + link map, returns tracked HTML.
+// When called with an agent key, enforces that key's daily cap and records
+// which key registered the message so the cap can be counted.
 async function registerMessage(
   db: D1Database,
   origin: string,
   userId: string,
-  body: RegisterBody
+  body: RegisterBody,
+  key?: { id: string; dailyLimit: number | null }
 ) {
+  if (key?.dailyLimit != null && (await registrationsToday(db, key.id)) >= key.dailyLimit) {
+    throw new RegisterLimitError(key.dailyLimit)
+  }
   const messageId = shortId()
   const links: { id: string; original_url: string }[] = []
 
@@ -593,19 +636,21 @@ async function registerMessage(
     ? trackedHtml.slice(0, cut) + pixelTag + trackedHtml.slice(cut)
     : pixelTag + trackedHtml
 
+  // The api_key_id column only exists once a key has been minted (ensureSchema
+  // runs then), so owner-token registers keep using the original column list.
+  const insertMessage = key
+    ? db.prepare(
+        `INSERT INTO messages (id, user_id, recipient, subject, campaign, agent_source, sent_at, api_key_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(messageId, userId, body.recipient, body.subject || null, body.campaign || null,
+             body.agent_source || null, now(), key.id)
+    : db.prepare(
+        `INSERT INTO messages (id, user_id, recipient, subject, campaign, agent_source, sent_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(messageId, userId, body.recipient, body.subject || null, body.campaign || null,
+             body.agent_source || null, now())
   const stmts = [
-    db.prepare(
-      `INSERT INTO messages (id, user_id, recipient, subject, campaign, agent_source, sent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      messageId,
-      userId,
-      body.recipient,
-      body.subject || null,
-      body.campaign || null,
-      body.agent_source || null,
-      now()
-    ),
+    insertMessage,
     ...links.map((l) =>
       db.prepare(
         'INSERT INTO links (id, message_id, original_url) VALUES (?, ?, ?)'
@@ -623,14 +668,25 @@ async function registerMessage(
 }
 
 // Register an outbound email: rewrites links, injects pixel, returns tracked HTML.
-app.post('/api/register', async (c) => {
+app.post('/api/register', requireScope('register'), async (c) => {
   const body = await c.req.json<RegisterBody>()
   if (!body.recipient || !body.html) {
     return c.json({ error: 'recipient and html required' }, 400)
   }
   const origin = trackingOrigin(c.env, c.req.url)
-  return c.json(await registerMessage(c.env.DB, origin, c.get('user').id, body))
+  const p = c.get('principal')
+  try {
+    return c.json(await registerMessage(c.env.DB, origin, p.user.id, body, keyOf(p)))
+  } catch (e) {
+    if (e instanceof RegisterLimitError) return c.json({ error: e.message }, 429)
+    throw e
+  }
 })
+
+/** The cap-tracking handle for an agent key; undefined for owner tokens/sessions. */
+function keyOf(p: Principal): { id: string; dailyLimit: number | null } | undefined {
+  return p.keyId ? { id: p.keyId, dailyLimit: p.dailyRegisterLimit } : undefined
+}
 
 // Per-message rollup for the authed user (shared by dashboard + MCP).
 async function messageSummary(db: D1Database, userId: string, limit = 200) {
@@ -653,7 +709,7 @@ async function messageSummary(db: D1Database, userId: string, limit = 200) {
   return results
 }
 
-app.get('/api/summary', async (c) => {
+app.get('/api/summary', requireScope('read'), async (c) => {
   const user = c.get('user')
   return c.json({
     user: { id: user.id, name: user.name },
@@ -662,7 +718,7 @@ app.get('/api/summary', async (c) => {
 })
 
 // Full event timeline for one of the authed user's messages.
-app.get('/api/messages/:id/events', async (c) => {
+app.get('/api/messages/:id/events', requireScope('read'), async (c) => {
   const user = c.get('user')
   const msg = await c.env.DB.prepare(
     'SELECT id FROM messages WHERE id = ? AND user_id = ?'
@@ -764,14 +820,14 @@ async function comparisonReport(db: D1Database, userId: string, days?: number) {
   }
 }
 
-app.get('/api/comparison', async (c) => {
+app.get('/api/comparison', requireScope('read'), async (c) => {
   const days = c.req.query('days') ? Number(c.req.query('days')) : undefined
   return c.json(await comparisonReport(c.env.DB, c.get('user').id, days))
 })
 
 // ---------- webhook configuration ----------
 
-app.get('/api/webhook', async (c) => {
+app.get('/api/webhook', requireScope('webhook'), async (c) => {
   const user = c.get('user')
   const row = await c.env.DB.prepare(
     'SELECT webhook_url, webhook_secret FROM users WHERE id = ?'
@@ -787,7 +843,7 @@ app.get('/api/webhook', async (c) => {
   })
 })
 
-app.put('/api/webhook', async (c) => {
+app.put('/api/webhook', requireScope('webhook'), async (c) => {
   const user = c.get('user')
   const body = await c.req.json<{ webhook_url?: string | null; webhook_secret?: string | null }>()
   const url = body.webhook_url?.trim() || null
@@ -801,7 +857,7 @@ app.put('/api/webhook', async (c) => {
 })
 
 /** Sends a sample payload so you can verify the receiver before going live. */
-app.post('/api/webhook/test', async (c) => {
+app.post('/api/webhook/test', requireScope('webhook'), async (c) => {
   const user = c.get('user')
   const row = await c.env.DB.prepare(
     'SELECT webhook_url, webhook_secret FROM users WHERE id = ?'
@@ -836,16 +892,63 @@ app.post('/api/webhook/test', async (c) => {
   })
 })
 
-// ---------- MCP endpoint (Bearer user token; scoped to that user) ----------
+// ---------- agent keys (owner only) ----------
 
-app.post('/mcp', (c) =>
-  handleMcp(c.req.raw, c.env.DB, {
+app.get('/api/keys', requireOwner, async (c) => {
+  try {
+    return c.json({ keys: await listKeys(c.env.DB, c.get('user').id) })
+  } catch {
+    return c.json({ keys: [] }) // table not created yet: no keys exist
+  }
+})
+
+app.post('/api/keys', requireOwner, async (c) => {
+  const body = await c.req.json<{
+    label?: string
+    scopes?: unknown
+    daily_register_limit?: number | null
+  }>()
+  const scopes = parseScopes(body.scopes)
+  if (!scopes) {
+    return c.json({ error: "scopes must be a non-empty list from: register, read, webhook" }, 400)
+  }
+  const limit = body.daily_register_limit
+  if (limit != null && (!Number.isInteger(limit) || limit < 1)) {
+    return c.json({ error: 'daily_register_limit must be a positive integer or null' }, 400)
+  }
+  // Existing databases predate api_keys; creating the first key migrates them.
+  await ensureSchema(c.env.DB)
+  const { id, key } = await mintKey(c.env.DB, c.get('user').id, {
+    label: body.label,
+    scopes,
+    dailyRegisterLimit: limit ?? null,
+  })
+  return c.json({
+    id,
+    key,
+    scopes,
+    daily_register_limit: limit ?? null,
+    note: 'Store this key now; it is not shown again.',
+  })
+})
+
+app.delete('/api/keys/:id', requireOwner, async (c) => {
+  const ok = await revokeKey(c.env.DB, c.get('user').id, c.req.param('id'))
+  return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
+})
+
+// ---------- MCP endpoint (Bearer key or owner token; scoped to that user) ----------
+
+app.post('/mcp', async (c) => {
+  const token = (c.req.header('authorization') || '').replace(/^Bearer\s+/i, '')
+  const principal = token ? await authenticate(c.env.DB, token) : null
+  return handleMcp(c.req.raw, c.env.DB, principal, {
     registerMessage,
     messageSummary,
     comparisonReport,
     trackingOrigin: trackingOrigin(c.env, c.req.url),
   })
-)
+})
 
 // ---------- dashboard (token-gated, self-contained SPA) ----------
 
